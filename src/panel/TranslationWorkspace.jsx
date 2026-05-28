@@ -46,6 +46,32 @@ function TranslationWorkspace({
   const pendingSaveRef = useRef(null);
   const dirtyCellsRef = useRef({});
   const [dirtyCount, setDirtyCount] = useState(0);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const headerLoadedRef = useRef(false);
+  const [dismissedHint, setDismissedHint] = useState(false);
+
+  useEffect(() => {
+    chrome.storage.local.get(['headerCollapsed', 'dismissedHint'], (result) => {
+      if (result.headerCollapsed !== undefined) {
+        setHeaderCollapsed(result.headerCollapsed);
+      }
+      if (result.dismissedHint !== undefined) {
+        setDismissedHint(result.dismissedHint);
+      }
+      headerLoadedRef.current = true;
+    });
+  }, []);
+
+  const toggleHeader = () => {
+    const next = !headerCollapsed;
+    setHeaderCollapsed(next);
+    chrome.storage.local.set({ headerCollapsed: next });
+  };
+
+  const dismissToolbarHint = () => {
+    setDismissedHint(true);
+    chrome.storage.local.set({ dismissedHint: true });
+  };
 
   const persistDirtyCell = async (rangeKey, cellData) => {
     const result = await chrome.storage.local.get(['pendingEdits']);
@@ -1105,8 +1131,9 @@ useEffect(() => {
 
   return (
       <div className="workspace" onMouseUp={(e) => { handleTextSelect(); handleSelectionMouseUp(); }} onKeyDown={handleKeyDown} tabIndex={-1} ref={workspaceRef}>
-      <div className="workspace-header">
-        <div className="sheet-info">
+      <div className={`workspace-header${headerCollapsed ? ' collapsed' : ''}`}>
+        {!headerCollapsed && (<>
+          <div className="sheet-info">
           <div className="sheet-selector-inline">
             <label>工作表:</label>
             {loadingSheets ? (
@@ -1258,8 +1285,13 @@ useEffect(() => {
             {loadingData ? '加载中...' : '刷新'}
           </button>
         </div>
+        </>)}
+        <button className="header-collapse-btn" onClick={toggleHeader} title={headerCollapsed ? '展开工具栏' : '折叠工具栏'}>
+          {headerCollapsed ? '▸' : '▾'}
+        </button>
       </div>
 
+      {(filteredRowIndices || markingMode || !dismissedHint) && (
       <div className="workspace-toolbar">
         <div className="toolbar-left-hints">
         {filteredRowIndices ? (
@@ -1270,7 +1302,10 @@ useEffect(() => {
         ) : markingMode ? (
           <span className="marking-hint">正在标记术语: "{markingMode.text}" → 点击目标语言翻译完成标记</span>
         ) : (
-          <span className="marking-hint">选择源语言文字后点击标记 → 再点击目标语言完成术语保存</span>
+          <span className="marking-hint">
+            选择源语言文字后点击标记 → 再点击目标语言完成术语保存
+            <button className="dismiss-hint-btn" onClick={dismissToolbarHint} title="关闭提示">✕</button>
+          </span>
         )}
         </div>
         <div className="toolbar-actions">
@@ -1279,9 +1314,10 @@ useEffect(() => {
               清除标记
             </button>
           )}
-          <button className="clear-marking" onClick={() => setMarkingMode(null)}>取消</button>
+          {markingMode && <button className="clear-marking" onClick={() => setMarkingMode(null)}>取消</button>}
         </div>
       </div>
+      )}
 
       <div className="workspace-table">
         <div className="table-header">

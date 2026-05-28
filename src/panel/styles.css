@@ -35,6 +35,34 @@
   flex-shrink: 0;
 }
 
+.workspace-header.collapsed {
+  padding: 4px 16px;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+.workspace-header.collapsed .sheet-info,
+.workspace-header.collapsed .header-actions {
+  display: none;
+}
+
+.header-collapse-btn {
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 8px;
+  color: #666;
+  line-height: 1.4;
+  flex-shrink: 0;
+}
+
+.header-collapse-btn:hover {
+  background: #e9ecef;
+  color: #333;
+}
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -366,6 +394,24 @@
 .marking-hint {
   font-size: 13px;
   color: #e65100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dismiss-hint-btn {
+  background: none;
+  border: none;
+  color: #e65100;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.6;
+}
+
+.dismiss-hint-btn:hover {
+  opacity: 1;
 }
 
 .clear-marking {
@@ -392,7 +438,7 @@
 .table-header {
   display: flex;
   background: #f5f5f5;
-  padding: 10px 12px;
+  padding: 6px 12px;
   font-weight: 600;
   font-size: 13px;
   border-bottom: 2px solid #ddd;
