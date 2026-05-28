@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "翻译助手 - 术语管理",
+  "version": "1.0.0",
+  "description": "本地化项目翻译工具，支持术语标记和历史翻译提醒",
+  "key": "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDZBvIX++G4cNhrZ+7IbavE/s2DCErIS2JuOl6Gb70ge9/Knk0Vy3FXJnWsKqk1oqJnGv98L60ktvg2WNUsELsALeJwCm7u2KvkUgDVFQFx2M5veVOZxlbaV6+11gldJRaBojMgJi5VdWOC2p3dAfxyn27o0VmEYdlof7VuiOsqAi53uHZxgmXYILLRLCgaUOu2rcPrg18bjh4/ahGAsqNuiBZ7hDhIVZYP4TXCuxE8o/0YA/oXe8sUcAqB3vdDLSwmw+dkPy37BlHHgywOHfUjy4Gl8J7vu33iwJKqJWvfCRhGYfiKwupwlJ4+C//OA7U+HajA3DicJn7sMf3lcEI3AgMBAAECggEAYhm5pQ2+Yljf+uzoCsFIO6vRycEdzJwGyjyoLaykmOJlrnkP7yIfAX3pAwHlqtDxCBo0Ejaa1VW/rRFKirilTtdu26ZbrqtSR8qphagRFx0hc1Isb/4vlFK+ojs10FzLZ52h7o5Ts110tdmMMjKLomRfBe5bwHNaitnvcR+C7WFpf1AM2EG45efzwzmd9C/oaf8vbfHRWp7VIxELveulBXkuHmcQxZUNcVP90jYfXSQBIcgXcU4unWwbN1UxLQJfmb9oDMMrQgxsj02EB4LUliJVOhVynu1ildR5DSOHvZDymqI4I4f+Yd59m8L5ds8nHsFYkIXvh/pzgSFkcTQggQKBgQD75ucjqbGTzBz7+VIYVnkIBVMcWKF0vW1/kuY4sIAeId93sZdr8lY2hN183hlu+dmA/37CRSghPT87qi8RkAakiMFWMfvNx+inapGsRCPeK2tZ00PTFGKNnrmnXEwowRgvrsPHDcvL2BCoPsZb+WiFdK3fLsIWWfGpYXbzw2nh/wKBgQDcjsynz8dFKCTz7e2MBCfWMgOsOwDkqRDtvuuOkr5IUHn+VZkne3yMFCmLoFzm4cSflIjfHJiotAwpckPoK2lXdwcLmFhSrHKA/T7C37HPaLnuMma5SpUj8xSMTR4lT6ROvXYSd4CtjAeGmq2j4lu9hyJLhlzHFwzYWG2zWTAvyQKBgA0RhZxMCXJpfHd2D9RDaDQKUq19y6KK0Ut1C4yVW5A0oatMA1cOU3qwme0IeLlRLP+MQb9CZzqSOt2VjquSlUWj8qPOJAog/OjylmwhfNrh1cfrNfGVdSdzvJ36I9lZay/OGUoSZShGJVcVKqVK4ylJTFvvyRHvyKHI9Krg0HVxAoGAZKYZyJ6t7eZC7rnuBE5FK58JRAhtAOwSGJxefGKEyRVIhoLjcDwO+xGcX+ZfXtE6XCR5TW+MTrhTMHq/eGyPFuXvZiAwdhHR8wEeKenRB7hf2M5RSE87vfsIrnnmvtoYPgKBpi24n/nd2VQu1zHN8bCAOvzmy8e+CeBYt1aFAdkCgYEA7RoA13LpSB1/rBHHZ7VuHupqIbIb5oe3JAJtsj+CK2b5TpDsvnQZfnufbnoWsec2k7rAkKsaOUXI7vbZf2LYHM1cXcvGWEjB0vsegUsVhyxCcmZrNbPhW1jvxiE5bQvxBDKZHRdxEQy8JzsQnGgmWjnsulc1QbcEGYY4CG/LQQA=",
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "identity"
+  ],
+  "host_permissions": [
+    "https://*.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://sheets.googleapis.com/*"
+  ],
+  "oauth2": {
+    "client_id": "148430684786-qh2cv6m2mlfpc697jr7iahnltm03fv3p.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/drive.readonly"
+    ]
+  },
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "翻译助手"
+  },
+  "background": {
+    "service_worker": "src/background/index.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://docs.google.com/spreadsheets/*"],
+      "js": ["src/content/index.js"],
+      "css": ["src/content/styles.css"]
+    }
+  ]
+}
