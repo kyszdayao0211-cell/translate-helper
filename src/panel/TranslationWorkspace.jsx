@@ -33,8 +33,9 @@ function TranslationWorkspace({
   const [rangeStart, setRangeStart] = useState(1);
   const [rangeEnd, setRangeEnd] = useState(200);
   const [autoCheckTerms, setAutoCheckTerms] = useState(false);
-  const [showPopup, setShowPopup] = useState(false);
-  const [popupData, setPopupData] = useState([]);
+  const [sidePanel, setSidePanel] = useState({ visible: false, data: [] });
+  const [highlightRow, setHighlightRow] = useState(null);
+  const [dismissedInconsistencies, setDismissedInconsistencies] = useState([]);
   const hasCheckedRef = useRef(false);
   const workspaceRef = useRef(null);
   const resizingRef = useRef(null);
@@ -49,6 +50,8 @@ function TranslationWorkspace({
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const headerLoadedRef = useRef(false);
   const [dismissedHint, setDismissedHint] = useState(false);
+  const [confirmPopup, setConfirmPopup] = useState({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+  const confirmPopupRef = useRef(null);
 
   useEffect(() => {
     chrome.storage.local.get(['headerCollapsed', 'dismissedHint'], (result) => {
@@ -61,6 +64,26 @@ function TranslationWorkspace({
       headerLoadedRef.current = true;
     });
   }, []);
+
+  useEffect(() => {
+    chrome.storage.local.get(['dismissedInconsistencies'], (result) => {
+      if (result.dismissedInconsistencies) {
+        setDismissedInconsistencies(result.dismissedInconsistencies);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (confirmPopup.visible && confirmPopupRef.current && !confirmPopupRef.current.contains(e.target)) {
+        setConfirmPopup({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+      }
+    };
+    if (confirmPopup.visible) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [confirmPopup.visible]);
 
   const toggleHeader = () => {
     const next = !headerCollapsed;
@@ -188,6 +211,13 @@ useEffect(() => {
   }, [loadingData, rows, autoCheckTerms, terms]);
 
   useEffect(() => { columnWidthsRef.current = columnWidths; }, [columnWidths]);
+
+  useEffect(() => {
+    if (highlightRow && rows.length > 0 && !loadingData) {
+      scrollToRow(highlightRow);
+      setHighlightRow(null);
+    }
+  }, [rows, loadingData, highlightRow]);
 
   const loadColumnWidths = async () => {
     const result = await chrome.storage.local.get(['columnWidths']);
@@ -530,8 +560,19 @@ useEffect(() => {
       
       toast.dismiss('checkAll');
       
-      if (inconsistentRows.length > 0) {
-        showInconsistentPopup(inconsistentRows);
+      const dismissed = dismissedInconsistencies;
+      const filteredRows = inconsistentRows.filter(item => 
+        !dismissed.some(d => 
+          d.row === item.row && 
+          d.source === item.source && 
+          d.expected === item.expected
+        )
+      );
+      
+      if (filteredRows.length > 0) {
+        openSidePanel(filteredRows);
+      } else if (inconsistentRows.length > 0) {
+        toast.success('全表检查完成，所有不一致已忽略');
       } else {
         toast.success('全表检查完成，未发现不一致');
       }
@@ -541,14 +582,58 @@ useEffect(() => {
     }
   };
   
-  const showInconsistentPopup = (data) => {
-    setPopupData(data);
-    setShowPopup(true);
+  const openSidePanel = (data) => {
+    setSidePanel({ visible: true, data });
   };
 
-  const closePopup = () => {
-    setShowPopup(false);
-    setPopupData([]);
+  const closeSidePanel = () => {
+    setSidePanel({ visible: false, data: [] });
+    setHighlightRow(null);
+  };
+
+  const handleDismissInconsistency = async (item) => {
+    const result = await chrome.storage.local.get(['dismissedInconsistencies']);
+    const dismissed = result.dismissedInconsistencies || [];
+    dismissed.push({
+      row: item.row,
+      source: item.source,
+      expected: item.expected,
+      actual: item.actual,
+      dismissedAt: new Date().toISOString()
+    });
+    await chrome.storage.local.set({ dismissedInconsistencies: dismissed });
+    setDismissedInconsistencies(dismissed);
+    const remaining = sidePanel.data.filter(d => 
+      !(d.row === item.row && d.source === item.source && d.expected === item.expected)
+    );
+    if (remaining.length === 0) {
+      setSidePanel({ visible: false, data: [] });
+      toast.success('所有不一致已处理完毕');
+    } else {
+      setSidePanel({ visible: true, data: remaining });
+    }
+  };
+
+  const handleSidePanelRowClick = (item) => {
+    const targetPage = Math.ceil(item.row / pageSize);
+    setHighlightRow(item.row);
+    closeSidePanel();
+    if (targetPage !== currentPage) {
+      setCurrentPage(targetPage);
+    } else {
+      scrollToRow(item.row);
+    }
+  };
+
+  const scrollToRow = (rowNum) => {
+    setTimeout(() => {
+      const rowEl = document.querySelector(`[data-row="${rowNum}"]`);
+      if (rowEl) {
+        rowEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        rowEl.classList.add('highlight-flash');
+        setTimeout(() => rowEl?.classList.remove('highlight-flash'), 2000);
+      }
+    }, 100);
   };
 
   const handleExportSheet = async (type) => {
@@ -837,6 +922,10 @@ useEffect(() => {
    };
 
   const handleKeyDown = async (e) => {
+    if (e.key === 'Escape' && confirmPopup.visible) {
+      setConfirmPopup({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+      return;
+    }
     if (selectedRows.size === 0) return;
     if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault();
@@ -941,7 +1030,7 @@ useEffect(() => {
     }
   };
 
-  const handleTextSelect = () => {
+  const handleTextSelect = (e) => {
     if (dragStateRef.current.isDragging) return;
     const selection = window.getSelection();
     const text = selection.toString().trim();
@@ -954,13 +1043,29 @@ useEffect(() => {
     }
     
     if (selectedCell.col === 'source') {
-      setMarkingMode({ type: 'source', text, rowIndex: selectedCell.rowIndex });
-      toast.success(`已选择 "${text}"，现在点击目标语言列标记术语`);
+      if (selection.rangeCount > 0) {
+        const rect = selection.getRangeAt(0).getBoundingClientRect();
+        setConfirmPopup({
+          visible: true,
+          x: rect.left + rect.width / 2,
+          y: rect.bottom + 8,
+          text,
+          rowIndex: selectedCell.rowIndex
+        });
+      }
     } else if (selectedCell.col === 'target' && markingMode?.type === 'source') {
+      let selectedTargetText = text;
+      if (e?.target?.tagName === 'TEXTAREA') {
+        selectedTargetText = e.target.value.substring(e.target.selectionStart, e.target.selectionEnd).trim();
+      }
+      if (!selectedTargetText) {
+        toast.error('请在目标列选中对应文本');
+        return;
+      }
       const newRows = [...rows];
       newRows[selectedCell.rowIndex].marked = true;
       setRows(newRows);
-      saveTerm(markingMode.text, text);
+      saveTerm(markingMode.text, selectedTargetText);
       setMarkingMode(null);
       toast.success('术语标记成功');
     }
@@ -977,6 +1082,17 @@ useEffect(() => {
 
   const closeTooltip = () => {
     setTooltip({ visible: false, x: 0, y: 0, terms: [] });
+  };
+
+  const handleConfirmTerm = () => {
+    if (confirmPopup.text) {
+      setMarkingMode({ type: 'source', text: confirmPopup.text, rowIndex: confirmPopup.rowIndex });
+      setConfirmPopup({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+    }
+  };
+
+  const handleCancelConfirm = () => {
+    setConfirmPopup({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
   };
 
   const checkTermReminder = useCallback((text) => {
@@ -1130,7 +1246,7 @@ useEffect(() => {
   };
 
   return (
-      <div className="workspace" onMouseUp={(e) => { handleTextSelect(); handleSelectionMouseUp(); }} onKeyDown={handleKeyDown} tabIndex={-1} ref={workspaceRef}>
+      <div className="workspace" onMouseUp={(e) => { handleTextSelect(e); handleSelectionMouseUp(); }} onKeyDown={handleKeyDown} tabIndex={-1} ref={workspaceRef}>
       <div className={`workspace-header${headerCollapsed ? ' collapsed' : ''}`}>
         {!headerCollapsed && (<>
           <div className="sheet-info">
@@ -1351,6 +1467,7 @@ useEffect(() => {
             <div 
               key={row.index}
               data-row-index={i}
+              data-row={row.index}
               style={!isVisible ? { display: 'none' } : {}}
               className={`table-row ${row.marked ? 'marked' : ''} ${selectedCell?.rowIndex === i ? 'selected' : ''} ${row.inconsistent ? 'inconsistent' : ''} ${row.highlighted ? 'highlighted' : ''} ${selectedRows.has(i) ? 'multi-selected' : ''}`}
               onMouseDown={(e) => {
@@ -1468,29 +1585,36 @@ useEffect(() => {
         )}
       </div>
 
-      {showPopup && (
-        <div className="popup-overlay" onClick={closePopup}>
-          <div className="popup-content" onClick={(e) => e.stopPropagation()}>
-            <div className="popup-header">
-              <h3>术语不一致列表</h3>
-              <button className="popup-close" onClick={closePopup}>×</button>
-            </div>
-            <div className="popup-body">
-              <p className="popup-summary">发现 {popupData.length} 处不一致：</p>
-              <div className="popup-list">
-                {popupData.slice(0, 100).map((item, i) => (
-                  <div key={i} className="popup-item">
-                    <span className="popup-row">行 {item.row}</span>
-                    <span className="popup-source">{item.source}</span>
-                    <span className="popup-arrow">→</span>
-                    <span className="popup-expected">标准: {item.expected}</span>
-                    <span className="popup-actual">实际: {item.actual}</span>
+      {sidePanel.visible && (
+        <div className="inconsistency-side-panel">
+          <div className="side-panel-header">
+            <h3>术语不一致列表</h3>
+            <button className="side-panel-close" onClick={closeSidePanel}>×</button>
+          </div>
+          <div className="side-panel-body">
+            <p className="side-panel-summary">共 {sidePanel.data.length} 处不一致</p>
+            <div className="side-panel-list">
+              {sidePanel.data.slice(0, 200).map((item, i) => (
+                <div key={i} className="side-panel-item" onClick={() => handleSidePanelRowClick(item)}>
+                  <div className="side-panel-item-main">
+                    <span className="side-panel-row">行 {item.row}</span>
+                    <span className="side-panel-source">{item.source}</span>
+                    <span className="side-panel-arrow">→</span>
+                    <span className="side-panel-expected">标准: {item.expected}</span>
+                    <span className="side-panel-actual">实际: {item.actual}</span>
                   </div>
-                ))}
-                {popupData.length > 100 && (
-                  <p className="popup-more">...还有 {popupData.length - 100} 处未显示</p>
-                )}
-              </div>
+                  <button 
+                    className="side-panel-dismiss-btn" 
+                    onClick={(e) => { e.stopPropagation(); handleDismissInconsistency(item); }}
+                    title="不再对此项提示不一致"
+                  >
+                    不再提醒
+                  </button>
+                </div>
+              ))}
+              {sidePanel.data.length > 200 && (
+                <p className="side-panel-more">...还有 {sidePanel.data.length - 200} 处未显示</p>
+              )}
             </div>
           </div>
         </div>
@@ -1518,6 +1642,25 @@ useEffect(() => {
               {term.count > 1 && <span className="term-tooltip-count">×{term.count}</span>}
             </div>
           ))}
+        </div>
+      )}
+
+      {confirmPopup.visible && (
+        <div 
+          ref={confirmPopupRef}
+          className="term-confirm-popup"
+          style={{
+            left: `${confirmPopup.x}px`,
+            top: `${confirmPopup.y}px`,
+          }}
+        >
+          <div className="term-confirm-text">
+            将 "<span className="term-confirm-highlight">{confirmPopup.text}</span>" 选为术语？
+          </div>
+          <div className="term-confirm-actions">
+            <button className="term-confirm-btn" onClick={handleConfirmTerm}>选为术语</button>
+            <button className="term-confirm-cancel" onClick={handleCancelConfirm}>取消</button>
+          </div>
         </div>
       )}
     </div>

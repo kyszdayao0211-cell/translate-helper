@@ -5,6 +5,25 @@ async function loadTerms() {
   terms = result.terms || [];
 }
 
+async function ensureTermsLoaded(maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    if (terms.length > 0) return true;
+    await loadTerms();
+    if (terms.length > 0) return true;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return terms.length > 0;
+}
+
+async function getCellTextWithRetry(cell, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    const text = cell.textContent?.trim();
+    if (text) return text;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return '';
+}
+
 loadTerms();
 
 // 过滤变化监听器
@@ -45,6 +64,8 @@ async function getFilteredRowsFromBackground() {
 function startFilterWatcher() {
   const container = document.querySelector('.grid-container');
   if (!container) return;
+
+  ensureTermsLoaded();
 
   filterObserver = new MutationObserver(
     debounce(async () => {
@@ -148,19 +169,25 @@ function highlightTermsInSheet() {
   });
 }
 
-document.addEventListener('click', (e) => {
-  const cell = e.target.closest('.grid-cell, .cell-input');
+document.addEventListener('click', async (e) => {
+  const cell = e.target.closest('.grid-cell, .cell-input, [role="gridcell"]');
   if (!cell) {
     const existing = document.getElementById('term-popup');
     if (existing) existing.remove();
     return;
   }
   
-  const text = cell.textContent?.trim();
+  const text = await getCellTextWithRetry(cell);
   if (!text) return;
+  
+  if (terms.length === 0) {
+    await ensureTermsLoaded();
+  }
   
   const matchedTerms = findMatchingTerms(text);
   if (matchedTerms.length > 0) {
+    const existing = document.getElementById('term-popup');
+    if (existing) existing.remove();
     const rect = cell.getBoundingClientRect();
     showTermPopup(matchedTerms, rect);
   }
