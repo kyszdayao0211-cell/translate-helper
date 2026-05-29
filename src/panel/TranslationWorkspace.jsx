@@ -50,8 +50,8 @@ function TranslationWorkspace({
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const headerLoadedRef = useRef(false);
   const [dismissedHint, setDismissedHint] = useState(false);
-  const [confirmPopup, setConfirmPopup] = useState({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
-  const confirmPopupRef = useRef(null);
+  const [floatMark, setFloatMark] = useState({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+  const floatMarkRef = useRef(null);
 
   useEffect(() => {
     chrome.storage.local.get(['headerCollapsed', 'dismissedHint'], (result) => {
@@ -75,15 +75,15 @@ function TranslationWorkspace({
 
   useEffect(() => {
     const handleClickOutside = (e) => {
-      if (confirmPopup.visible && confirmPopupRef.current && !confirmPopupRef.current.contains(e.target)) {
-        setConfirmPopup({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+      if (floatMark.visible && floatMarkRef.current && !floatMarkRef.current.contains(e.target)) {
+        setFloatMark({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
       }
     };
-    if (confirmPopup.visible) {
+    if (floatMark.visible) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [confirmPopup.visible]);
+  }, [floatMark.visible]);
 
   const toggleHeader = () => {
     const next = !headerCollapsed;
@@ -617,7 +617,6 @@ useEffect(() => {
   const handleSidePanelRowClick = (item) => {
     const targetPage = Math.ceil(item.row / pageSize);
     setHighlightRow(item.row);
-    closeSidePanel();
     if (targetPage !== currentPage) {
       setCurrentPage(targetPage);
     } else {
@@ -922,8 +921,14 @@ useEffect(() => {
    };
 
   const handleKeyDown = async (e) => {
-    if (e.key === 'Escape' && confirmPopup.visible) {
-      setConfirmPopup({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+    if (e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')) {
+      const sel = window.getSelection();
+      const selText = sel?.toString()?.trim();
+      if (selText && selectedCell?.col === 'source' && !markingMode) {
+        e.preventDefault();
+        setMarkingMode({ type: 'source', text: selText, rowIndex: selectedCell.rowIndex });
+        setFloatMark({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+      }
       return;
     }
     if (selectedRows.size === 0) return;
@@ -1045,10 +1050,10 @@ useEffect(() => {
     if (selectedCell.col === 'source') {
       if (selection.rangeCount > 0) {
         const rect = selection.getRangeAt(0).getBoundingClientRect();
-        setConfirmPopup({
+        setFloatMark({
           visible: true,
-          x: rect.left + rect.width / 2,
-          y: rect.bottom + 8,
+          x: rect.right,
+          y: rect.top,
           text,
           rowIndex: selectedCell.rowIndex
         });
@@ -1084,15 +1089,11 @@ useEffect(() => {
     setTooltip({ visible: false, x: 0, y: 0, terms: [] });
   };
 
-  const handleConfirmTerm = () => {
-    if (confirmPopup.text) {
-      setMarkingMode({ type: 'source', text: confirmPopup.text, rowIndex: confirmPopup.rowIndex });
-      setConfirmPopup({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
+  const handleFloatMarkClick = () => {
+    if (floatMark.text) {
+      setMarkingMode({ type: 'source', text: floatMark.text, rowIndex: floatMark.rowIndex });
+      setFloatMark({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
     }
-  };
-
-  const handleCancelConfirm = () => {
-    setConfirmPopup({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
   };
 
   const checkTermReminder = useCallback((text) => {
@@ -1645,22 +1646,19 @@ useEffect(() => {
         </div>
       )}
 
-      {confirmPopup.visible && (
+      {floatMark.visible && (
         <div 
-          ref={confirmPopupRef}
-          className="term-confirm-popup"
+          ref={floatMarkRef}
+          className="float-mark-btn"
           style={{
-            left: `${confirmPopup.x}px`,
-            top: `${confirmPopup.y}px`,
+            left: `${floatMark.x}px`,
+            top: `${floatMark.y}px`,
           }}
+          onMouseUp={(e) => e.stopPropagation()}
+          onClick={handleFloatMarkClick}
+          title="标记为术语 (Ctrl+Shift+T)"
         >
-          <div className="term-confirm-text">
-            将 "<span className="term-confirm-highlight">{confirmPopup.text}</span>" 选为术语？
-          </div>
-          <div className="term-confirm-actions">
-            <button className="term-confirm-btn" onClick={handleConfirmTerm}>选为术语</button>
-            <button className="term-confirm-cancel" onClick={handleCancelConfirm}>取消</button>
-          </div>
+          ⊕
         </div>
       )}
     </div>

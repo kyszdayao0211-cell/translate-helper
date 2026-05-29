@@ -884,78 +884,31 @@
   flex-shrink: 0;
 }
 
-/* Term Confirm Popup */
-.term-confirm-popup {
+/* Float Mark Button (⊕) */
+.float-mark-btn {
   position: fixed;
   z-index: 10000;
-  transform: translateX(-50%);
-  background: white;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  padding: 14px 18px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  font-size: 13px;
-  animation: tooltipFadeIn 0.15s ease-out;
-  min-width: 180px;
-}
-
-.term-confirm-popup::after {
-  content: '';
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  border: 8px solid transparent;
-  border-bottom-color: white;
-}
-
-.term-confirm-text {
-  color: #333;
-  margin-bottom: 12px;
-  line-height: 1.5;
-}
-
-.term-confirm-highlight {
-  color: #e65100;
-  font-weight: 600;
-}
-
-.term-confirm-actions {
-  display: flex;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.term-confirm-btn {
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 32px;
   background: #ff9800;
   color: white;
-  border: none;
-  padding: 6px 14px;
-  border-radius: 4px;
-  font-size: 12px;
+  border: 2px solid #e65100;
+  border-radius: 50%;
+  font-size: 18px;
+  font-weight: bold;
+  line-height: 28px;
+  text-align: center;
   cursor: pointer;
-  font-weight: 500;
-  transition: background 0.15s;
-}
-
-.term-confirm-btn:hover {
-  background: #f57c00;
-}
-
-.term-confirm-cancel {
-  background: white;
-  color: #666;
-  border: 1px solid #ddd;
-  padding: 6px 14px;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   transition: all 0.15s;
+  user-select: none;
 }
 
-.term-confirm-cancel:hover {
-  background: #f5f5f5;
-  border-color: #ccc;
+.float-mark-btn:hover {
+  background: #f57c00;
+  transform: translate(-50%, -50%) scale(1.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 /* Panel Toolbar */
