@@ -52,7 +52,7 @@ function TranslationWorkspace({
   const [dismissedHint, setDismissedHint] = useState(false);
   const [floatMark, setFloatMark] = useState({ visible: false, x: 0, y: 0, text: '', rowIndex: null });
   const floatMarkRef = useRef(null);
-
+  
   useEffect(() => {
     chrome.storage.local.get(['headerCollapsed', 'dismissedHint'], (result) => {
       if (result.headerCollapsed !== undefined) {
@@ -211,6 +211,13 @@ useEffect(() => {
   }, [loadingData, rows, autoCheckTerms, terms]);
 
   useEffect(() => { columnWidthsRef.current = columnWidths; }, [columnWidths]);
+
+  useEffect(() => {
+    if (highlightRow && rows.length > 0 && !loadingData) {
+      scrollToRow(highlightRow);
+      setHighlightRow(null);
+    }
+  }, [rows, loadingData, highlightRow]);
 
   useEffect(() => {
     if (highlightRow && rows.length > 0 && !loadingData) {
@@ -921,7 +928,7 @@ useEffect(() => {
    };
 
   const handleKeyDown = async (e) => {
-    if (e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')) {
+    if (e.ctrlKey && e.shiftKey && (e.key === 'Z' || e.key === 'z')) {
       const sel = window.getSelection();
       const selText = sel?.toString()?.trim();
       if (selText && selectedCell?.col === 'source' && !markingMode) {
@@ -1023,6 +1030,10 @@ useEffect(() => {
     const row = rows[rowIndex];
     const text = col === 'source' ? row.source : col === 'intermediate' ? row.intermediate : row.target;
     setSelectedCell({ rowIndex, col, text });
+
+    if (col === 'source') {
+      workspaceRef.current?.focus();
+    }
 
     if (col === 'source' && text) {
       const matchedTerms = findTermsInText(text);
@@ -1656,9 +1667,9 @@ useEffect(() => {
           }}
           onMouseUp={(e) => e.stopPropagation()}
           onClick={handleFloatMarkClick}
-          title="标记为术语 (Ctrl+Shift+T)"
+          title="标记为术语 (Ctrl+Shift+Z)"
         >
-          ⊕
+          +
         </div>
       )}
     </div>
