@@ -21,21 +21,30 @@ function Panel() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    chrome.storage.local.get(['google_token', 'sheetSettings'], (result) => {
+    chrome.storage.local.get(['google_token', 'sheetSettings', 'sheetSettingsMap'], (result) => {
       setToken(result.google_token || null);
       const ss = result.sheetSettings;
+      const map = result.sheetSettingsMap || {};
       if (ss?.sheet) {
+        // 用该表格自己保存的配置覆盖全局配置（如果有的话）
+        const perSheet = map[ss.sheet.id] || ss;
         setCurrentSheet(ss.sheet);
         setShowSetup(false);
+        setSourceCol(perSheet.sourceCol || 'A');
+        setTargetCol(perSheet.targetCol || 'B');
+        setShowIntermediate(perSheet.showIntermediate || false);
+        setIntermediateCol(perSheet.intermediateCol || 'C');
+        setTermLibraryBindingId(perSheet.termLibraryBindingId || null);
+        setShowTermsCol(perSheet.showTermsCol || false);
       } else {
         setShowSetup(true);
+        setSourceCol(ss?.sourceCol || 'A');
+        setTargetCol(ss?.targetCol || 'B');
+        setShowIntermediate(ss?.showIntermediate || false);
+        setIntermediateCol(ss?.intermediateCol || 'C');
+        setTermLibraryBindingId(ss?.termLibraryBindingId || null);
+        setShowTermsCol(ss?.showTermsCol || false);
       }
-      setSourceCol(ss?.sourceCol || 'A');
-      setTargetCol(ss?.targetCol || 'B');
-      setShowIntermediate(ss?.showIntermediate || false);
-      setIntermediateCol(ss?.intermediateCol || 'C');
-      setTermLibraryBindingId(ss?.termLibraryBindingId || null);
-      setShowTermsCol(ss?.showTermsCol || false);
       setLoading(false);
     });
   }, []);
@@ -68,9 +77,32 @@ function Panel() {
   };
 
   const handleSheetSelect = async (sheet) => {
+    // 读取该表格之前保存过的独立配置
+    const result = await new Promise(resolve =>
+      chrome.storage.local.get(['sheetSettingsMap'], resolve)
+    );
+    const map = result.sheetSettingsMap || {};
+    const perSheet = map[sheet.id] || {};
+
+    // 还原该表格自己的列设置和术语库绑定
     setCurrentSheet(sheet);
+    setSourceCol(perSheet.sourceCol || 'A');
+    setTargetCol(perSheet.targetCol || 'B');
+    setShowIntermediate(perSheet.showIntermediate || false);
+    setIntermediateCol(perSheet.intermediateCol || 'C');
+    setTermLibraryBindingId(perSheet.termLibraryBindingId || null);
+    setShowTermsCol(perSheet.showTermsCol || false);
     setShowSetup(false);
-    await saveSettings({ sheet });
+
+    await saveSettings({
+      sheet,
+      sourceCol: perSheet.sourceCol || 'A',
+      targetCol: perSheet.targetCol || 'B',
+      showIntermediate: perSheet.showIntermediate || false,
+      intermediateCol: perSheet.intermediateCol || 'C',
+      termLibraryBindingId: perSheet.termLibraryBindingId || null,
+      showTermsCol: perSheet.showTermsCol || false,
+    });
   };
 
   const handleSheetChange = async (title) => {
@@ -106,10 +138,25 @@ function Panel() {
   };
 
   const saveSettings = async (partial) => {
-    const result = await chrome.storage.local.get(['sheetSettings']);
+    const result = await chrome.storage.local.get(['sheetSettings', 'sheetSettingsMap']);
     const current = result.sheetSettings || {};
+    const updated = { ...current, ...partial };
+    const map = result.sheetSettingsMap || {};
+
+    // 以当前表格 ID 为 key，单独保存一份该表格的配置
+    const sheetId = updated.sheet?.id;
+    if (sheetId) {
+      map[sheetId] = {
+        ...(map[sheetId] || {}),
+        ...partial,
+        // sheet 对象本身不需要重复存在 map 里
+        sheet: undefined,
+      };
+    }
+
     await chrome.storage.local.set({
-      sheetSettings: { ...current, ...partial }
+      sheetSettings: updated,
+      sheetSettingsMap: map,
     });
   };
 

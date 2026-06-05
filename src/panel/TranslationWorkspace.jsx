@@ -243,8 +243,8 @@ useEffect(() => {
       const allTerms = result.terms || [];
       const libraries = result.termLibraries || [];
       
-      let filteredTerms = allTerms;
-      
+      let filteredTerms;
+
       if (termLibraryBindingId) {
         const lib = libraries.find(l => l.id === termLibraryBindingId);
         if (lib) {
@@ -253,7 +253,12 @@ useEffect(() => {
           } else {
             filteredTerms = allTerms.filter(t => t.libraryId === termLibraryBindingId);
           }
+        } else {
+          filteredTerms = [];
         }
+      } else {
+        // 没有绑定术语库时，只加载未归属到任何库的全局术语
+        filteredTerms = allTerms.filter(t => !t.libraryId);
       }
       
       setTerms(filteredTerms);
@@ -790,9 +795,9 @@ useEffect(() => {
     
     await chrome.storage.local.set({ terms: newTerms });
     
-    const filteredTerms = termLibraryBindingId 
-      ? newTerms.filter(t => !t.libraryId || t.libraryId === termLibraryBindingId)
-      : newTerms;
+    const filteredTerms = termLibraryBindingId
+      ? newTerms.filter(t => t.libraryId === termLibraryBindingId)
+      : newTerms.filter(t => !t.libraryId);
     setTerms(filteredTerms);
     
     const markedResult = await chrome.storage.local.get(['markedTerms']);
