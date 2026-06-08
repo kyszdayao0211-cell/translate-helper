@@ -2996,3 +2996,274 @@
   color: #999;
   margin: 4px 0;
 }
+
+/* ===== AI Translation Panel ===== */
+.ai-translation-panel {
+  border-top: 2px solid #e8eaf6;
+  padding: 16px;
+  background: #fafafa;
+}
+
+.ai-panel-header h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  color: #3f51b5;
+}
+
+.ai-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-status-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.ai-status-label {
+  color: #666;
+}
+
+.ai-status-value {
+  color: #333;
+  font-weight: 500;
+}
+
+.ai-refresh-btn {
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.ai-refresh-btn:hover:not(:disabled) {
+  background: #f5f5f5;
+}
+
+.ai-config-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  margin-bottom: 10px;
+  color: #555;
+}
+
+.ai-config-value {
+  font-weight: 600;
+  color: #333;
+}
+
+.ai-config-hint {
+  font-size: 11px;
+  color: #999;
+}
+
+.ai-config-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ai-range-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.ai-row-input {
+  width: 70px;
+  padding: 4px 6px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.ai-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ai-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.ai-start-btn {
+  padding: 8px 20px;
+  background: #3f51b5;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.ai-start-btn:hover:not(:disabled) {
+  background: #303f9f;
+}
+
+.ai-start-btn:disabled {
+  background: #9fa8da;
+  cursor: not-allowed;
+}
+
+.ai-pause-btn {
+  padding: 8px 16px;
+  background: #ff9800;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.ai-stop-btn {
+  padding: 8px 16px;
+  background: #f44336;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.ai-progress-section {
+  margin-bottom: 10px;
+}
+
+.ai-progress-bar-wrap {
+  height: 8px;
+  background: #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.ai-progress-bar-fill {
+  height: 100%;
+  background: #3f51b5;
+  transition: width 0.3s ease;
+}
+
+.ai-progress-text {
+  font-size: 12px;
+  color: #666;
+}
+
+.ai-failed-section {
+  background: #fff3e0;
+  border: 1px solid #ffe0b2;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.ai-failed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 500;
+  color: #e65100;
+  margin-bottom: 6px;
+}
+
+.ai-retry-btn {
+  padding: 4px 10px;
+  background: #e65100;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ai-failed-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #555;
+}
+
+/* ===== Doc Glossary IO (in TermLibrarySelector) ===== */
+.doc-glossary-section {
+  margin-top: 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.doc-glossary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f5f5f5;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #444;
+}
+
+.doc-glossary-header:hover {
+  background: #eeeeee;
+}
+
+.doc-glossary-toggle {
+  font-size: 11px;
+  color: #888;
+}
+
+.doc-glossary-body {
+  padding: 10px 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.doc-io-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.doc-io-label {
+  font-size: 13px;
+  color: #555;
+  min-width: 90px;
+}
+
+.doc-io-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fafafa;
+  cursor: pointer;
+}
+
+.doc-io-btn:hover {
+  background: #f0f0f0;
+}

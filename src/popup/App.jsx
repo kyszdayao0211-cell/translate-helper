@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Login from './components/Login';
 import SheetSelector from './components/SheetSelector';
 import TermManager from './components/TermManager';
+import Settings from './components/Settings';
 import './styles.css';
 
 function App() {
@@ -55,6 +56,7 @@ function App() {
       <nav className="popup-nav">
         <button className={view === 'selector' ? 'active' : ''} onClick={() => setView('selector')}>选择表格</button>
         <button className={view === 'terms' ? 'active' : ''} onClick={() => setView('terms')}>术语管理</button>
+        <button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}>设置</button>
       </nav>
       <main className="popup-content">
         {view === 'selector' && (
@@ -66,6 +68,9 @@ function App() {
         )}
         {view === 'terms' && (
           <TermManager />
+        )}
+        {view === 'settings' && (
+          <Settings />
         )}
       </main>
     </div>

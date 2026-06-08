@@ -74,7 +74,121 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(err => sendResponse({ error: err.message, visibleRows: [] }));
     return true;
   }
+
+  if (request.type === 'ANTHROPIC_TRANSLATE') {
+    translateWithAI(request.apiKey, request.apiType, request.endpoint, request.model, request.systemPrompt, request.texts)
+      .then(translations => sendResponse({ translations }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
+
+  if (request.type === 'READ_SHEET_TAB') {
+    readSheetTab(request.spreadsheetId, request.tabName, request.token)
+      .then(data => sendResponse({ data }))
+      .catch(err => sendResponse({ error: err.message, data: null }));
+    return true;
+  }
+
+  if (request.type === 'BATCH_WRITE_CELLS') {
+    batchWriteCells(request.spreadsheetId, request.sheetTitle, request.updates, request.token)
+      .then(() => sendResponse({ success: true }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
 });
+
+async function translateWithAI(apiKey, apiType, endpoint, model, systemPrompt, texts) {
+  const userMessage = `请翻译以下 ${texts.length} 行文本：\n${JSON.stringify(texts)}`;
+
+  let headers, body;
+
+  if (apiType === 'anthropic') {
+    headers = {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31',
+    };
+    body = JSON.stringify({
+      model,
+      max_tokens: 8192,
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: userMessage }],
+    });
+  } else {
+    // OpenAI 兼容格式（OpenAI / DeepSeek / Gemini OpenAI-compat / 本地 Ollama 等）
+    headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    };
+    body = JSON.stringify({
+      model,
+      max_tokens: 8192,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+    });
+  }
+
+  const response = await fetch(endpoint, { method: 'POST', headers, body });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `API 错误: ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  // 统一提取文本：Anthropic 格式 vs OpenAI 格式
+  const raw = apiType === 'anthropic'
+    ? (data.content?.[0]?.text || '')
+    : (data.choices?.[0]?.message?.content || '');
+
+  // 提取 JSON 数组（兼容模型在回复中包含多余文字的情况）
+  const match = raw.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error('返回内容无法解析为 JSON 数组');
+  return JSON.parse(match[0]);
+}
+
+async function readSheetTab(spreadsheetId, tabName, token) {
+  const range = encodeURIComponent(`${tabName}`);
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (res.status === 400 || res.status === 404) return null; // tab 不存在
+  if (!res.ok) throw new Error(`读取 ${tabName} 失败: ${res.status}`);
+  const data = await res.json();
+  return data.values || [];
+}
+
+async function batchWriteCells(spreadsheetId, sheetTitle, updates, token) {
+  // updates: [{ row: number, col: string, value: string }, ...]
+  const valueRanges = updates.map(u => ({
+    range: `${sheetTitle}!${u.col}${u.row}`,
+    values: [[u.value]],
+  }));
+
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        valueInputOption: 'RAW',
+        data: valueRanges,
+      }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `写入失败: ${res.status}`);
+  }
+}
 
 async function getFilteredVisibleRows(spreadsheetId, sheetTitle) {
   return new Promise((resolve, reject) => {

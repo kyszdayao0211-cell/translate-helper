@@ -4,6 +4,7 @@ import SheetSelector from '../popup/components/SheetSelector';
 import TranslationWorkspace from './TranslationWorkspace';
 import TermLibrarySelector from './TermLibrarySelector';
 import TermManager from './TermManager';
+import AITranslationPanel from './AITranslationPanel';
 import './styles.css';
 
 function Panel() {
@@ -232,10 +233,17 @@ function Panel() {
             showTermsCol={showTermsCol}
             onTermsColToggle={handleTermsColToggle}
           />
-          <TermLibrarySelector 
+          <TermLibrarySelector
             currentLibraryId={termLibraryBindingId}
             onLibraryChange={handleTermLibraryChange}
             token={token}
+            spreadsheetId={currentSheet?.id}
+          />
+          <AITranslationPanel
+            token={token}
+            sheet={currentSheet}
+            sourceCol={sourceCol}
+            targetCol={targetCol}
           />
           <TermManager token={token} />
         </>
