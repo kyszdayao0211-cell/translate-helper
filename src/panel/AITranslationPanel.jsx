@@ -52,6 +52,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
   const [isPaused, setIsPaused] = useState(false);
   const [progress, setProgress] = useState(null);
   const [failedBatches, setFailedBatches] = useState([]);
+  const [syncing, setSyncing] = useState(false);
   const pausedRef = useRef(false);
   const abortRef = useRef(false);
 
@@ -65,36 +66,59 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
   }, [spreadsheetId, token]);
 
   const loadGlossaryAndGuide = async () => {
+    if (!spreadsheetId || !token) {
+      setGlossaryStatus('请先选择表格');
+      setGuideStatus('请先选择表格');
+      setGlossaryRows([]);
+      setGuideText('');
+      return;
+    }
     setGlossaryStatus('加载中...');
     setGuideStatus('加载中...');
 
-    const [glossaryResp, guideResp] = await Promise.all([
-      sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token }),
-      sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_guide', token }),
-    ]);
+    try {
+      const [glossaryResp, guideResp] = await Promise.all([
+        sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token }),
+        sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_guide', token }),
+      ]);
 
-    if (glossaryResp.data) {
-      setGlossaryRows(glossaryResp.data);
-      const count = Math.max(0, (glossaryResp.data.length || 1) - 1);
-      setGlossaryStatus(`已加载（${count} 条）`);
-    } else {
+      if (glossaryResp?.data && glossaryResp.data.length > 0) {
+        setGlossaryRows(glossaryResp.data);
+        const count = Math.max(0, glossaryResp.data.length - 1); // 减去表头行
+        setGlossaryStatus(`已加载（${count} 条）`);
+      } else {
+        setGlossaryRows([]);
+        setGlossaryStatus('未找到 _glossary tab（将使用本地术语库）');
+      }
+
+      if (guideResp?.data && guideResp.data.length > 0) {
+        const text = guideResp.data.map(r => r[0] || '').join('\n').trim();
+        setGuideText(text);
+        setGuideStatus(text ? '已加载' : '内容为空');
+      } else {
+        setGuideText('');
+        setGuideStatus('未找到 _guide tab');
+      }
+    } catch (err) {
       setGlossaryRows([]);
-      setGlossaryStatus('未找到 _glossary tab');
-      toast('_glossary tab 不存在，将仅使用本地术语库', { icon: 'ℹ️' });
-    }
-
-    if (guideResp.data) {
-      const text = guideResp.data.map(r => r[0] || '').join('\n').trim();
-      setGuideText(text);
-      setGuideStatus(text ? '已加载' : '内容为空');
-    } else {
       setGuideText('');
-      setGuideStatus('未找到 _guide tab');
+      setGlossaryStatus('加载失败: ' + err.message);
+      setGuideStatus('加载失败');
     }
   };
 
-  function sendBgMessage(msg) {
-    return new Promise(resolve => chrome.runtime.sendMessage(msg, resolve));
+  // 带超时的 sendMessage，防止 background service worker 未响应时永久挂起
+  function sendBgMessage(msg, timeoutMs = 15000) {
+    return new Promise(resolve => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) { settled = true; resolve({ data: null, error: '请求超时' }); }
+      }, timeoutMs);
+      chrome.runtime.sendMessage(msg, (resp) => {
+        clearTimeout(timer);
+        if (!settled) { settled = true; resolve(resp || { data: null }); }
+      });
+    });
   }
 
   const getLocalTerms = async (bindingId) => {
@@ -331,6 +355,87 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
     }
   };
 
+  // 将本地术语库同步（合并）到 _glossary tab
+  const handleSyncToGlossary = async () => {
+    if (!spreadsheetId || !token) { toast.error('请先选择表格'); return; }
+    setSyncing(true);
+    try {
+      const stored = await chrome.storage.local.get(['terms', 'sheetSettings']);
+      const bindingId = stored.sheetSettings?.termLibraryBindingId || null;
+      const allTerms = stored.terms || [];
+      const localTerms = bindingId
+        ? allTerms.filter(t => !t.libraryId || t.libraryId === bindingId)
+        : allTerms;
+
+      if (localTerms.length === 0) {
+        toast('本地术语库为空，无需同步', { icon: 'ℹ️' });
+        setSyncing(false);
+        return;
+      }
+
+      // 读取现有 _glossary tab
+      const existingResp = await sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token });
+      const existingRows = existingResp?.data || [];
+
+      // 构建现有条目的 source 集合（跳过表头行）
+      const existingSources = new Set(
+        existingRows.slice(1).map(r => r[0]).filter(Boolean)
+      );
+
+      // 只追加本地有、_glossary 没有的条目
+      const newRows = localTerms
+        .filter(t => t.source && !existingSources.has(t.source))
+        .map(t => [t.source, t.target || '', t.note || '']);
+
+      if (newRows.length === 0) {
+        toast('所有本地术语已在 _glossary tab 中，无新增', { icon: 'ℹ️' });
+        setSyncing(false);
+        return;
+      }
+
+      // 追加写入：先确定写入位置（现有行数 + 1）
+      const nextRow = existingRows.length > 0 ? existingRows.length + 1 : 2; // 第1行是表头
+      const hasHeader = existingRows.length > 0;
+
+      // 构建完整写入数据
+      let writeValues;
+      if (!hasHeader) {
+        // tab 不存在或为空，写表头 + 数据
+        writeValues = [['source', 'target', 'notes'], ...newRows];
+        const range = encodeURIComponent('_glossary');
+        const res = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=RAW`,
+          {
+            method: 'PUT',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ range: '_glossary', majorDimension: 'ROWS', values: writeValues }),
+          }
+        );
+        if (!res.ok) throw new Error(`写入失败: ${res.status}`);
+      } else {
+        // 追加到现有内容后面
+        const appendRange = encodeURIComponent(`_glossary!A${nextRow}`);
+        const res = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ majorDimension: 'ROWS', values: newRows }),
+          }
+        );
+        if (!res.ok) throw new Error(`追加写入失败: ${res.status}`);
+      }
+
+      toast.success(`已同步 ${newRows.length} 条本地术语到 _glossary tab`);
+      // 刷新状态
+      await loadGlossaryAndGuide();
+    } catch (err) {
+      toast.error('同步失败: ' + err.message);
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const isLoaded = glossaryRows !== null && guideText !== null;
   const canStart = !isRunning && isLoaded;
 
@@ -349,8 +454,16 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
           <span className="ai-status-label">翻译指导:</span>
           <span className="ai-status-value">{guideStatus}</span>
         </div>
-        <button className="ai-refresh-btn" onClick={loadGlossaryAndGuide} disabled={isRunning}>
+        <button className="ai-refresh-btn" onClick={loadGlossaryAndGuide} disabled={isRunning || syncing}>
           刷新
+        </button>
+        <button
+          className="ai-sync-btn"
+          onClick={handleSyncToGlossary}
+          disabled={isRunning || syncing}
+          title="将工作区本地术语库中的术语追加到 _glossary tab（已存在的不重复添加）"
+        >
+          {syncing ? '同步中...' : '同步本地术语 →'}
         </button>
       </div>
 
