@@ -40,7 +40,7 @@ ${guideText || '（无）'}
 示例返回格式：["译文1", "译文2", "译文3"]`;
 }
 
-function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
+function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationDone }) {
   const [glossaryRows, setGlossaryRows] = useState(null);
   const [guideText, setGuideText] = useState(null);
   const [glossaryStatus, setGlossaryStatus] = useState('未加载');
@@ -55,9 +55,31 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
   const [syncing, setSyncing] = useState(false);
   const pausedRef = useRef(false);
   const abortRef = useRef(false);
+  const abortControllerRef = useRef(null);
+  const freshTokenRef = useRef(token);
 
   const spreadsheetId = sheet?.id;
   const sheetTitle = sheet?.title;
+
+  const getFreshToken = () => new Promise((resolve, reject) => {
+    chrome.identity.getAuthToken({ interactive: false }, (t) => {
+      if (chrome.runtime.lastError || !t) {
+        chrome.identity.removeCachedAuthToken({ token: t || '' }, () => {
+          chrome.identity.getAuthToken({ interactive: true }, (newT) => {
+            if (chrome.runtime.lastError || !newT) {
+              reject(new Error('获取授权失败，请重新登录'));
+            } else {
+              freshTokenRef.current = newT;
+              resolve(newT);
+            }
+          });
+        });
+      } else {
+        freshTokenRef.current = t;
+        resolve(t);
+      }
+    });
+  });
 
   useEffect(() => {
     if (spreadsheetId && token) {
@@ -77,9 +99,10 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
     setGuideStatus('加载中...');
 
     try {
+      const freshToken = await getFreshToken();
       const [glossaryResp, guideResp] = await Promise.all([
-        sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token }),
-        sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_guide', token }),
+        sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token: freshToken }),
+        sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_guide', token: freshToken }),
       ]);
 
       if (glossaryResp?.data && glossaryResp.data.length > 0) {
@@ -129,12 +152,15 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
   };
 
   const loadApiConfig = async () => {
-    const stored = await chrome.storage.local.get(['aiApiKey', 'aiApiType', 'aiEndpoint', 'aiModel', 'batchSize', 'sheetSettings']);
+    const stored = await chrome.storage.local.get(['aiApiKey', 'aiApiType', 'aiEndpoint', 'aiModel', 'batchSize', 'batchDelay', 'sheetSettings']);
     return stored;
   };
 
-  const makeTranslateCall = (cfg, systemPrompt, texts) =>
-    sendBgMessage({
+  const makeTranslateCall = (cfg, systemPrompt, texts) => {
+    // 如果已经 abort，直接返回失败
+    if (abortRef.current) return Promise.resolve({ error: '已停止' });
+
+    const msg = {
       type: 'ANTHROPIC_TRANSLATE',
       apiKey: cfg.aiApiKey,
       apiType: cfg.aiApiType || 'anthropic',
@@ -142,7 +168,20 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
       model: cfg.aiModel,
       systemPrompt,
       texts,
-    });
+    };
+
+    // 用 Promise.race 让 abort 能立刻中断等待
+    return Promise.race([
+      sendBgMessage(msg, 120000),
+      new Promise(resolve => {
+        const check = setInterval(() => {
+          if (abortRef.current) { clearInterval(check); resolve({ error: '已停止' }); }
+        }, 200);
+        // 安全兜底：2 分钟后清理 interval
+        setTimeout(() => clearInterval(check), 120000);
+      }),
+    ]);
+  };
 
   const runTranslation = async () => {
     if (!spreadsheetId || !sheetTitle) {
@@ -170,9 +209,10 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
     const end = endRow ? parseInt(endRow, 10) : null;
 
     const endParam = end || '';
+    const freshToken = await getFreshToken();
     const [srcResp, tgtResp] = await Promise.all([
-      sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: `${sheetTitle}!${sourceCol}${start}:${sourceCol}${endParam}`, token }),
-      sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: `${sheetTitle}!${targetCol}${start}:${targetCol}${endParam}`, token }),
+      sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: `${sheetTitle}!${sourceCol}${start}:${sourceCol}${endParam}`, token: freshToken }),
+      sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: `${sheetTitle}!${targetCol}${start}:${targetCol}${endParam}`, token: freshToken }),
     ]);
 
     const sourceValues = (srcResp.data || []).map(r => r[0] || '');
@@ -196,6 +236,8 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
       batches.push(rows.slice(i, i + batchSize));
     }
 
+    const batchDelaySec = cfg.batchDelay ?? 4;
+
     setIsRunning(true);
     setIsPaused(false);
     setFailedBatches([]);
@@ -206,6 +248,11 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
 
     for (let bi = 0; bi < batches.length; bi++) {
       if (abortRef.current) break;
+
+      // 批次间隔（第一批不等）
+      if (bi > 0 && batchDelaySec > 0) {
+        await new Promise(r => setTimeout(r, batchDelaySec * 1000));
+      }
 
       while (pausedRef.current) {
         await new Promise(r => setTimeout(r, 300));
@@ -226,11 +273,28 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
       let lastError = null;
 
       for (let attempt = 0; attempt < 3; attempt++) {
+        if (abortRef.current) break;
         const resp = await makeTranslateCall(cfg, systemPrompt, batch.map(r => r.text));
+        if (abortRef.current) break;
         if (resp.translations) { translations = resp.translations; break; }
         lastError = resp.error || '未知错误';
-        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        if (lastError === '已停止') break;
+        // 429 限速：等待时间更长（15s / 30s / 60s）
+        const isRateLimit = lastError.startsWith('RATE_LIMIT:');
+        const waitMs = isRateLimit ? 15000 * (attempt + 1) : 1000 * (attempt + 1);
+        if (isRateLimit) toast(`触发限速，等待 ${waitMs / 1000} 秒后重试...`, { icon: '⏳', duration: waitMs });
+        // 等待期间也可以被 abort 打断
+        await new Promise(r => {
+          const timer = setTimeout(r, waitMs);
+          const check = setInterval(() => {
+            if (abortRef.current) { clearInterval(check); clearTimeout(timer); r(); }
+          }, 200);
+          setTimeout(() => clearInterval(check), waitMs + 100);
+        });
       }
+      if (abortRef.current) break;
+      // 清理 RATE_LIMIT 前缀，只展示原始消息
+      if (lastError?.startsWith('RATE_LIMIT:')) lastError = lastError.slice('RATE_LIMIT:'.length);
 
       if (!translations) {
         newFailed.push({ batchIndex: bi, rowNums: batchRowNums, error: lastError });
@@ -242,7 +306,8 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
         row: r.rowNum, col: targetCol, value: translations[i] ?? '',
       })).filter(u => u.value !== '');
 
-      const writeResp = await sendBgMessage({ type: 'BATCH_WRITE_CELLS', spreadsheetId, sheetTitle, updates, token });
+      const writeToken = await getFreshToken();
+      const writeResp = await sendBgMessage({ type: 'BATCH_WRITE_CELLS', spreadsheetId, sheetTitle, updates, token: writeToken });
       if (writeResp.error) {
         newFailed.push({ batchIndex: bi, rowNums: batchRowNums, error: writeResp.error });
         setFailedBatches(prev => [...prev, { batchIndex: bi, rowNums: batchRowNums, error: writeResp.error }]);
@@ -257,6 +322,8 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
     } else {
       toast.error(`翻译完成，${newFailed.length} 批失败，可点击「重试失败行」`);
     }
+    // 通知工作区刷新数据
+    onTranslationDone?.();
   };
 
   const handlePauseResume = () => {
@@ -273,6 +340,9 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
     abortRef.current = true;
     pausedRef.current = false;
     setIsPaused(false);
+    setIsRunning(false);
+    setProgress(null);
+    toast('翻译已停止', { icon: '⏹️' });
   };
 
   const handleRetryFailed = async () => {
@@ -313,11 +383,12 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
         isRetry: true,
       });
 
+      const retryToken = await getFreshToken();
       const srcResp = await sendBgMessage({
         type: 'READ_SHEET_TAB',
         spreadsheetId,
         tabName: `${sheetTitle}!${sourceCol}${failedBatch.rowNums[0]}:${sourceCol}${failedBatch.rowNums[failedBatch.rowNums.length - 1]}`,
-        token,
+        token: retryToken,
       });
       const srcValues = (srcResp.data || []).map(r => r[0] || '');
 
@@ -328,8 +399,11 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
         const resp = await makeTranslateCall(cfg, systemPrompt, srcValues);
         if (resp.translations) { translations = resp.translations; break; }
         lastError = resp.error || '未知错误';
-        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        const isRateLimit = lastError.startsWith('RATE_LIMIT:');
+        const waitMs = isRateLimit ? 15000 * (attempt + 1) : 1000 * (attempt + 1);
+        await new Promise(r => setTimeout(r, waitMs));
       }
+      if (lastError?.startsWith('RATE_LIMIT:')) lastError = lastError.slice('RATE_LIMIT:'.length);
 
       if (!translations) {
         stillFailed.push({ ...failedBatch, error: lastError });
@@ -340,7 +414,8 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
         row: rowNum, col: targetCol, value: translations[i] ?? '',
       })).filter(u => u.value !== '');
 
-      const writeResp = await sendBgMessage({ type: 'BATCH_WRITE_CELLS', spreadsheetId, sheetTitle, updates, token });
+      const writeRetryToken = await getFreshToken();
+      const writeResp = await sendBgMessage({ type: 'BATCH_WRITE_CELLS', spreadsheetId, sheetTitle, updates, token: writeRetryToken });
       if (writeResp.error) stillFailed.push({ ...failedBatch, error: writeResp.error });
     }
 
@@ -353,6 +428,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
     } else {
       toast.error(`仍有 ${stillFailed.length} 批失败`);
     }
+    onTranslationDone?.();
   };
 
   // 将本地术语库同步（合并）到 _glossary tab
@@ -374,7 +450,8 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
       }
 
       // 读取现有 _glossary tab
-      const existingResp = await sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token });
+      const syncToken = await getFreshToken();
+      const existingResp = await sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token: syncToken });
       const existingRows = existingResp?.data || [];
 
       // 构建现有条目的 source 集合（跳过表头行）
@@ -407,7 +484,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
           `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=RAW`,
           {
             method: 'PUT',
-            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            headers: { Authorization: `Bearer ${syncToken}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ range: '_glossary', majorDimension: 'ROWS', values: writeValues }),
           }
         );
@@ -419,7 +496,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol }) {
           `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
           {
             method: 'POST',
-            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            headers: { Authorization: `Bearer ${syncToken}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ majorDimension: 'ROWS', values: newRows }),
           }
         );

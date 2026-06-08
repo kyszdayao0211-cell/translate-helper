@@ -20,6 +20,12 @@ const PRESETS = {
     model: 'deepseek-chat',
     keyPlaceholder: 'sk-...',
   },
+  gemini: {
+    label: 'Gemini',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    model: 'gemini-2.0-flash',
+    keyPlaceholder: 'AIza...',
+  },
   custom: {
     label: '自定义',
     endpoint: '',
@@ -35,16 +41,18 @@ function Settings() {
   const [model, setModel] = useState(PRESETS.anthropic.model);
   const [showKey, setShowKey] = useState(false);
   const [batchSize, setBatchSize] = useState(50);
+  const [batchDelay, setBatchDelay] = useState(4);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    chrome.storage.local.get(['aiApiKey', 'aiApiType', 'aiEndpoint', 'aiModel', 'batchSize'], (result) => {
+    chrome.storage.local.get(['aiApiKey', 'aiApiType', 'aiEndpoint', 'aiModel', 'batchSize', 'batchDelay'], (result) => {
       const type = result.aiApiType || 'anthropic';
       setApiType(type);
       setApiKey(result.aiApiKey || '');
       setEndpoint(result.aiEndpoint || PRESETS[type]?.endpoint || '');
       setModel(result.aiModel || PRESETS[type]?.model || '');
       setBatchSize(result.batchSize || 50);
+      setBatchDelay(result.batchDelay ?? 4);
     });
   }, []);
 
@@ -72,13 +80,15 @@ function Settings() {
     }
     setSaving(true);
     try {
+      const delay = parseInt(batchDelay, 10);
       await chrome.storage.local.set({
         aiApiKey: apiKey.trim(),
         aiApiType: apiType,
         aiEndpoint: endpoint.trim(),
         aiModel: model.trim(),
         batchSize: size,
-        // 兼容旧键名，方便其他地方平滑过渡
+        batchDelay: isNaN(delay) ? 0 : Math.max(0, delay),
+        // 兼容旧键名
         anthropicApiKey: apiType === 'anthropic' ? apiKey.trim() : undefined,
       });
       toast.success('设置已保存');
@@ -159,6 +169,22 @@ function Settings() {
           min={10}
           max={200}
         />
+      </div>
+
+      <div className="input-group">
+        <label>批次间隔（秒）</label>
+        <input
+          type="number"
+          value={batchDelay}
+          onChange={(e) => setBatchDelay(e.target.value)}
+          min={0}
+          max={60}
+          step={1}
+        />
+        <small>
+          遇到 429 限速时建议设为 4–5 秒。Gemini 免费层约 15次/分钟，
+          每批 20 行时建议间隔 ≥ 4 秒。付费层可设为 0。
+        </small>
       </div>
 
       <button className="load-btn" onClick={handleSave} disabled={saving}>

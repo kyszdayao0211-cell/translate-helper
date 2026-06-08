@@ -17,7 +17,8 @@
     "https://sheets.googleapis.com/*",
     "https://api.anthropic.com/*",
     "https://api.openai.com/*",
-    "https://api.deepseek.com/*"
+    "https://api.deepseek.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "oauth2": {
     "client_id": "148430684786-qh2cv6m2mlfpc697jr7iahnltm03fv3p.apps.googleusercontent.com",

@@ -20,6 +20,7 @@ function Panel() {
   const [termLibraryBindingId, setTermLibraryBindingId] = useState(null);
   const [showTermsCol, setShowTermsCol] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     chrome.storage.local.get(['google_token', 'sheetSettings', 'sheetSettingsMap'], (result) => {
@@ -215,7 +216,7 @@ function Panel() {
         </div>
       ) : (
         <>
-          <TranslationWorkspace 
+          <TranslationWorkspace
             token={token}
             sheet={currentSheet}
             sheets={sheets}
@@ -232,6 +233,7 @@ function Panel() {
             termLibraryBindingId={termLibraryBindingId}
             showTermsCol={showTermsCol}
             onTermsColToggle={handleTermsColToggle}
+            refreshKey={refreshKey}
           />
           <TermLibrarySelector
             currentLibraryId={termLibraryBindingId}
@@ -242,6 +244,7 @@ function Panel() {
           <AITranslationPanel
             token={token}
             sheet={currentSheet}
+            onTranslationDone={() => setRefreshKey(k => k + 1)}
             sourceCol={sourceCol}
             targetCol={targetCol}
           />

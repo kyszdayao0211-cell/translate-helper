@@ -135,7 +135,10 @@ async function translateWithAI(apiKey, apiType, endpoint, model, systemPrompt, t
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `API 错误: ${response.status}`);
+    const msg = err?.error?.message || `API 错误: ${response.status}`;
+    // 用特殊前缀标记限速错误，让前端做更长的等待
+    if (response.status === 429) throw new Error(`RATE_LIMIT:${msg}`);
+    throw new Error(msg);
   }
 
   const data = await response.json();

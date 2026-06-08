@@ -17,7 +17,8 @@ function TranslationWorkspace({
   onIntermediateColChange,
   termLibraryBindingId,
   showTermsCol,
-  onTermsColToggle
+  onTermsColToggle,
+  refreshKey
 }) {
   const [rows, setRows] = useState([]);
   const [selectedCell, setSelectedCell] = useState(null);
@@ -163,6 +164,22 @@ function TranslationWorkspace({
     textareaRefs.current[index] = el;
     autoResizeTextarea(el);
   }, []);
+
+  // 当 rows 数据变化时（包括 AI 翻译写回、刷新），重算所有 textarea 高度
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      Object.values(textareaRefs.current).forEach(el => {
+        if (el) autoResizeTextarea(el);
+      });
+    });
+  }, [rows]);
+
+  // AI 翻译完成后自动刷新工作区数据
+  useEffect(() => {
+    if (refreshKey > 0 && sheet?.id) {
+      loadSheetData();
+    }
+  }, [refreshKey]);
 
 useEffect(() => {
     if (!sheet?.id) return;
