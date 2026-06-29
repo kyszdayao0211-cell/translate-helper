@@ -53,11 +53,32 @@ function TermManager({ token }) {
   };
 
   const deleteTerm = async (sourceText) => {
+    // 远程库的术语存在 lib.terms 里，需直接更新库
+    if (selectedLibraryId) {
+      const libsResult = await chrome.storage.local.get(['termLibraries']);
+      const libs = libsResult.termLibraries || [];
+      const libIdx = libs.findIndex(l => l.id === selectedLibraryId);
+      if (libIdx >= 0 && libs[libIdx].source === 'remote') {
+        const lib = { ...libs[libIdx] };
+        lib.terms = (lib.terms || []).filter(t => t.source !== sourceText);
+        lib.termCount = lib.terms.length;
+        libs[libIdx] = lib;
+        await chrome.storage.local.set({ termLibraries: libs });
+        loadTerms();
+        notifyContentScript();
+        toast.success('术语已删除');
+        return;
+      }
+    }
+
     const result = await chrome.storage.local.get(['terms']);
     const allTerms = result.terms || [];
-    const updated = allTerms.filter(t => t.source !== sourceText);
+    const updated = allTerms.filter(t =>
+      !(t.source === sourceText && (!selectedLibraryId || t.libraryId === selectedLibraryId))
+    );
     await chrome.storage.local.set({ terms: updated });
-    setTerms(updated.filter(t => t.source !== sourceText));
+    loadTerms();
+    notifyContentScript();
     toast.success('术语已删除');
   };
 
@@ -136,14 +157,37 @@ function TermManager({ token }) {
       return;
     }
     
+    // 远程库的术语存在 lib.terms 里，需直接更新库
+    if (selectedLibraryId) {
+      const libsResult = await chrome.storage.local.get(['termLibraries']);
+      const libs = libsResult.termLibraries || [];
+      const libIdx = libs.findIndex(l => l.id === selectedLibraryId);
+      if (libIdx >= 0 && libs[libIdx].source === 'remote') {
+        const lib = { ...libs[libIdx] };
+        lib.terms = (lib.terms || []).map(t =>
+          t.source === editingTerm.originalSource
+            ? { ...t, source: editingTerm.source.trim(), target: editingTerm.target.trim(), caseSensitive: editingTerm.caseSensitive || false, note: editingTerm.note || '' }
+            : t
+        );
+        lib.termCount = lib.terms.length;
+        libs[libIdx] = lib;
+        await chrome.storage.local.set({ termLibraries: libs });
+        setEditingTerm(null);
+        loadTerms();
+        notifyContentScript();
+        toast.success('术语已更新');
+        return;
+      }
+    }
+
     const result = await chrome.storage.local.get(['terms']);
     const allTerms = result.terms || [];
-    
+
     const updated = allTerms.map(t => {
-      if (t.source === editingTerm.originalSource) {
-        return { 
-          ...t, 
-          source: editingTerm.source.trim(), 
+      if (t.source === editingTerm.originalSource && (!selectedLibraryId || t.libraryId === selectedLibraryId)) {
+        return {
+          ...t,
+          source: editingTerm.source.trim(),
           target: editingTerm.target.trim(),
           caseSensitive: editingTerm.caseSensitive || false,
           note: editingTerm.note || ''
@@ -151,10 +195,11 @@ function TermManager({ token }) {
       }
       return t;
     });
-    
+
     await chrome.storage.local.set({ terms: updated });
     setEditingTerm(null);
     loadTerms();
+    notifyContentScript();
     toast.success('术语已更新');
   };
 

@@ -154,11 +154,56 @@ async function translateWithAI(apiKey, apiType, endpoint, model, systemPrompt, t
   return JSON.parse(match[0]);
 }
 
+// ===== Google token 管理（service worker 内，无法 import ES 模块，故内联）=====
+function bgGetAuthToken(interactive) {
+  return new Promise((resolve, reject) => {
+    chrome.identity.getAuthToken({ interactive }, (token) => {
+      if (chrome.runtime.lastError || !token) {
+        reject(new Error(chrome.runtime.lastError?.message || '获取授权失败'));
+      } else {
+        resolve(token);
+      }
+    });
+  });
+}
+
+function bgRemoveCachedToken(token) {
+  return new Promise((resolve) => {
+    if (!token) return resolve();
+    chrome.identity.removeCachedAuthToken({ token }, () => resolve());
+  });
+}
+
+// 带 401/403 自动清缓存→静默刷新→重试的 fetch（长批次翻译时 token 过期也能续上）
+async function bgAuthedFetch(url, options = {}) {
+  let token;
+  try {
+    token = await bgGetAuthToken(false);
+  } catch (e) {
+    token = await bgGetAuthToken(true);
+  }
+  const build = (t) => ({
+    ...options,
+    headers: { ...(options.headers || {}), Authorization: `Bearer ${t}` },
+  });
+
+  let res = await fetch(url, build(token));
+  if (res.status !== 401 && res.status !== 403) return res;
+
+  await bgRemoveCachedToken(token);
+  try {
+    token = await bgGetAuthToken(false);
+  } catch (e) {
+    token = await bgGetAuthToken(true);
+  }
+  res = await fetch(url, build(token));
+  return res;
+}
+
 async function readSheetTab(spreadsheetId, tabName, token) {
   const range = encodeURIComponent(`${tabName}`);
-  const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`,
-    { headers: { Authorization: `Bearer ${token}` } }
+  const res = await bgAuthedFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`
   );
   if (res.status === 400 || res.status === 404) return null; // tab 不存在
   if (!res.ok) throw new Error(`读取 ${tabName} 失败: ${res.status}`);
@@ -173,12 +218,11 @@ async function batchWriteCells(spreadsheetId, sheetTitle, updates, token) {
     values: [[u.value]],
   }));
 
-  const res = await fetch(
+  const res = await bgAuthedFetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
     {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -194,34 +238,21 @@ async function batchWriteCells(spreadsheetId, sheetTitle, updates, token) {
 }
 
 async function getFilteredVisibleRows(spreadsheetId, sheetTitle) {
-  return new Promise((resolve, reject) => {
-    chrome.identity.getAuthToken({ interactive: false }, async (token) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      try {
-        const range = sheetTitle ? `&ranges=${encodeURIComponent(sheetTitle)}` : '';
-        const res = await fetch(
-          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true${range}&fields=sheets.data.rowMetadata`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!res.ok) throw new Error(`API error: ${res.status}`);
-        const data = await res.json();
-        if (!data.sheets?.[0]?.data?.[0]?.rowMetadata) {
-          return [];
-        }
-        const rowMetadata = data.sheets[0].data[0].rowMetadata;
-        const visibleRows = [];
-        rowMetadata.forEach((row, index) => {
-          if (!row.hiddenByFilter) {
-            visibleRows.push(index + 1);
-          }
-        });
-        return visibleRows;
-      } catch (e) {
-        reject(e);
-      }
-    });
+  const range = sheetTitle ? `&ranges=${encodeURIComponent(sheetTitle)}` : '';
+  const res = await bgAuthedFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?includeGridData=true${range}&fields=sheets.data.rowMetadata`
+  );
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  const data = await res.json();
+  if (!data.sheets?.[0]?.data?.[0]?.rowMetadata) {
+    return [];
+  }
+  const rowMetadata = data.sheets[0].data[0].rowMetadata;
+  const visibleRows = [];
+  rowMetadata.forEach((row, index) => {
+    if (!row.hiddenByFilter) {
+      visibleRows.push(index + 1);
+    }
   });
+  return visibleRows;
 }

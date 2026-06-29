@@ -5,6 +5,7 @@ import TranslationWorkspace from './TranslationWorkspace';
 import TermLibrarySelector from './TermLibrarySelector';
 import TermManager from './TermManager';
 import AITranslationPanel from './AITranslationPanel';
+import { authedFetch } from '../utils/googleAuth';
 import './styles.css';
 
 function Panel() {
@@ -60,9 +61,8 @@ function Panel() {
     if (!spreadsheetId) return;
     setLoadingSheets(true);
     try {
-      const response = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title,sheets.properties.sheetId`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const response = await authedFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title,sheets.properties.sheetId`
       );
       if (!response.ok) throw new Error('获取 sheet 列表失败');
       const data = await response.json();

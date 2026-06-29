@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
+import { authedFetch } from '../utils/googleAuth';
 
 function buildSystemPrompt(glossaryRows, guideText, localTerms) {
   const allTerms = [];
@@ -480,11 +481,11 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
         // tab 不存在或为空，写表头 + 数据
         writeValues = [['source', 'target', 'notes'], ...newRows];
         const range = encodeURIComponent('_glossary');
-        const res = await fetch(
+        const res = await authedFetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=RAW`,
           {
             method: 'PUT',
-            headers: { Authorization: `Bearer ${syncToken}`, 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ range: '_glossary', majorDimension: 'ROWS', values: writeValues }),
           }
         );
@@ -492,11 +493,11 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
       } else {
         // 追加到现有内容后面
         const appendRange = encodeURIComponent(`_glossary!A${nextRow}`);
-        const res = await fetch(
+        const res = await authedFetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${appendRange}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
           {
             method: 'POST',
-            headers: { Authorization: `Bearer ${syncToken}`, 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ majorDimension: 'ROWS', values: newRows }),
           }
         );

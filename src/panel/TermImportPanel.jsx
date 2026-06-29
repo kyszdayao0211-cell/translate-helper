@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
+import { authedFetch } from '../utils/googleAuth';
 
 function TermImportPanel({ token, onImport, onClose, title = '从 Google Sheet 导入术语库', buttonText = '导入' }) {
   const [spreadsheetId, setSpreadsheetId] = useState('');
@@ -11,6 +12,13 @@ function TermImportPanel({ token, onImport, onClose, title = '从 Google Sheet �
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState(1);
 
+  // 支持直接粘贴完整 URL，自动提取 /d/<id>/ 中的表格 ID
+  const extractId = (raw) => {
+    const s = (raw || '').trim();
+    const m = s.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    return m ? m[1] : s;
+  };
+
   const fetchSheets = async () => {
     if (!spreadsheetId) {
       toast.error('请输入表格 ID');
@@ -18,11 +26,20 @@ function TermImportPanel({ token, onImport, onClose, title = '从 Google Sheet �
     }
     setLoading(true);
     try {
-      const response = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title,sheets.properties.sheetId`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const cleanId = extractId(spreadsheetId);
+      const response = await authedFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}?fields=sheets.properties.title,sheets.properties.sheetId`
       );
-      if (!response.ok) throw new Error('获取工作表失败');
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          throw new Error('登录已过期或无访问权限，请重新登录后再试');
+        }
+        if (response.status === 404) {
+          throw new Error('找不到该表格，请检查表格 ID 是否正确');
+        }
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody?.error?.message || `HTTP ${response.status}`);
+      }
       const data = await response.json();
       const list = data.sheets?.map(s => ({
         id: s.properties.sheetId,
@@ -57,21 +74,26 @@ function TermImportPanel({ token, onImport, onClose, title = '从 Google Sheet �
     }
     setLoading(true);
     try {
+      const cleanId = extractId(spreadsheetId);
       const cols = noteCol ? [sourceCol, targetCol, noteCol].sort() : [sourceCol, targetCol].sort();
       const rangeName = `${selectedSheet}!${cols[0]}:${cols[cols.length - 1]}`;
-      const response = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(rangeName)}?majorDimension=ROWS`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const response = await authedFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${cleanId}/values/${encodeURIComponent(rangeName)}?majorDimension=ROWS`
       );
       if (!response.ok) throw new Error('获取数据失败');
       const data = await response.json();
       const values = data.values || [];
       
       const terms = [];
-      const srcIdx = colToIndex(sourceCol);
-      const tgtIdx = colToIndex(targetCol);
-      const noteIdx = noteCol ? colToIndex(noteCol) : -1;
-      values.forEach(row => {
+      // 拉取的 range 从 cols[0]（最小列）开始，所以行内下标要相对于该起始列，
+      // 否则当列不是从 A 开始时（如 源=C 目标=E）下标会错位，导致导入混乱。
+      const base = colToIndex(cols[0]);
+      const srcIdx = colToIndex(sourceCol) - base;
+      const tgtIdx = colToIndex(targetCol) - base;
+      const noteIdx = noteCol ? colToIndex(noteCol) - base : -1;
+      values.forEach((row, i) => {
+        if (i === 0) return; // 跳过表头行
+        if (!row) return;
         if (row[srcIdx] && row[tgtIdx]) {
           terms.push({
             source: row[srcIdx].trim(),
@@ -87,7 +109,7 @@ function TermImportPanel({ token, onImport, onClose, title = '从 Google Sheet �
       }
       
       onImport({
-        spreadsheetId,
+        spreadsheetId: cleanId,
         sheetName: selectedSheet,
         sourceCol,
         targetCol,

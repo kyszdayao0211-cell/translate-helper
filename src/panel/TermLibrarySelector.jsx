@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import TermImportPanel from './TermImportPanel';
+import { authedFetch } from '../utils/googleAuth';
 
 function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreadsheetId }) {
   const [libraries, setLibraries] = useState([]);
@@ -236,6 +237,33 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
     setEditingLibName(lib.name);
   };
 
+  const handleDeleteLibrary = async () => {
+    if (!selectedLibId) return;
+    const lib = libraries.find(l => l.id === selectedLibId);
+    if (!lib) return;
+    if (!window.confirm(`确定删除术语库「${lib.name}」吗？此操作不可撤销。`)) return;
+
+    try {
+      const result = await chrome.storage.local.get(['termLibraries', 'terms']);
+      const libs = (result.termLibraries || []).filter(l => l.id !== selectedLibId);
+      const toSet = { termLibraries: libs };
+
+      // 本地库的术语保存在全局 terms 数组里，需一并清理
+      if (lib.source !== 'remote') {
+        const allTerms = result.terms || [];
+        toSet.terms = allTerms.filter(t => t.libraryId !== selectedLibId);
+      }
+
+      await chrome.storage.local.set(toSet);
+      setLibraries(libs);
+      setSelectedLibId('');
+      onLibraryChange(null);
+      toast.success('术语库已删除');
+    } catch (err) {
+      toast.error('删除术语库失败');
+    }
+  };
+
   // ---- 文档绑定术语库 (_glossary / _guide) 导入导出 ----
 
   function sendBgMessage(msg) {
@@ -328,11 +356,11 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
 
   const writeTabFull = async (tabName, values) => {
     const range = encodeURIComponent(tabName);
-    const res = await fetch(
+    const res = await authedFetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=RAW`,
       {
         method: 'PUT',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ range: tabName, majorDimension: 'ROWS', values }),
       }
     );
@@ -385,11 +413,17 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
             >
               导出
             </button>
-            <button 
+            <button
               className="rename-lib-btn"
               onClick={() => startRename(libraries.find(l => l.id === selectedLibId))}
             >
               重命名
+            </button>
+            <button
+              className="delete-lib-btn"
+              onClick={handleDeleteLibrary}
+            >
+              删除
             </button>
           </>
         )}

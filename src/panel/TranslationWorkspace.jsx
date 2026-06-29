@@ -1,5 +1,116 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, memo } from 'react';
 import toast from 'react-hot-toast';
+import { authedFetch, getFreshToken as getFreshTokenUtil } from '../utils/googleAuth';
+
+function autoResizeTextarea(textarea) {
+  if (!textarea) return;
+  textarea.style.height = 'auto';
+  textarea.style.height = textarea.scrollHeight + 'px';
+}
+
+// 单行组件：用 memo 包裹，保证只有数据真正变化的行才会重渲染，
+// 避免每敲一个字就重渲染整页几百行。
+const TableRow = memo(function TableRow({
+  row, i, isVisible, isSelectedCell, isMultiSelected,
+  columnWidths, showIntermediate, showTermsCol,
+  onCellSelect, onUpdateCell, onTextareaRef, onTargetBlur,
+  onRowMouseDown, onRowMouseMove, onClearRowInconsistency,
+}) {
+  return (
+    <div
+      data-row-index={i}
+      data-row={row.index}
+      style={!isVisible ? { display: 'none' } : undefined}
+      className={`table-row ${row.marked ? 'marked' : ''} ${isSelectedCell ? 'selected' : ''} ${row.inconsistent ? 'inconsistent' : ''} ${row.highlighted ? 'highlighted' : ''} ${isMultiSelected ? 'multi-selected' : ''}`}
+      onMouseDown={(e) => {
+        const targetColEl = e.target.closest('.col-target');
+        if (targetColEl) {
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            onRowMouseDown(i, e);
+            return;
+          }
+          if (e.target.tagName !== 'TEXTAREA') {
+            onRowMouseDown(i, e);
+          }
+        }
+      }}
+      onMouseMove={(e) => onRowMouseMove(i, e)}
+    >
+      <div className="col-num">{row.index}</div>
+      <div
+        className="col-source"
+        style={{ width: columnWidths.source, minWidth: columnWidths.source }}
+        onClick={(e) => onCellSelect(i, 'source', row.source, e)}
+      >
+        <div className="cell-readonly">{row.source}</div>
+      </div>
+      {showIntermediate && (
+        <div
+          className="col-intermediate"
+          style={{ width: columnWidths.intermediate, minWidth: columnWidths.intermediate }}
+          onClick={(e) => onCellSelect(i, 'intermediate', row.intermediate, e)}
+        >
+          <div className="cell-readonly">{row.intermediate}</div>
+        </div>
+      )}
+      <div
+        className="col-target"
+        style={{ width: columnWidths.target, minWidth: columnWidths.target }}
+        onClick={(e) => onCellSelect(i, 'target', row.target, e)}
+      >
+        <textarea
+          ref={onTextareaRef}
+          data-row-index={i}
+          value={row.target}
+          onChange={(e) => {
+            onUpdateCell(i, e.target.value, 'target');
+            autoResizeTextarea(e.target);
+          }}
+          onFocus={(e) => onCellSelect(i, 'target', row.target, e)}
+          onBlur={() => onTargetBlur(row.source)}
+          placeholder="目标语言..."
+        />
+        {row.marked && <span className="term-badge">术语</span>}
+        {row.inconsistent && row.inconsistentReason && (
+          <span className="inconsistent-reason" title={row.inconsistentReason}>⚠</span>
+        )}
+      </div>
+      {showTermsCol && (
+        <div
+          className="col-terms"
+          style={{ width: columnWidths.terms, minWidth: columnWidths.terms }}
+          onClick={(e) => onCellSelect(i, 'target', row.target, e)}
+        >
+          {row.matchedTerms && row.matchedTerms.length > 0 ? (
+            <div className="terms-col-list">
+              {row.matchedTerms.map((term, ti) => {
+                const isInconsistent = row.inconsistent && row.target && term.target && row.target.trim() !== term.target.trim();
+                return (
+                  <div key={ti} className={`terms-col-item ${isInconsistent ? 'terms-col-warn' : ''}`}>
+                    <span className="terms-col-source">{term.source}</span>
+                    <span className="terms-col-arrow">→</span>
+                    <span className="terms-col-target">{term.target}</span>
+                    {term.note && <span className="term-note-icon" title={term.note}>📝</span>}
+                    {isInconsistent && (
+                      <button
+                        className="terms-col-dismiss"
+                        onClick={(e) => { e.stopPropagation(); onClearRowInconsistency(i); }}
+                        title="清除不一致标记"
+                      >×</button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="terms-col-empty">-</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+});
 
 function TranslationWorkspace({ 
   token, 
@@ -21,6 +132,8 @@ function TranslationWorkspace({
   refreshKey
 }) {
   const [rows, setRows] = useState([]);
+  const [resizeNonce, setResizeNonce] = useState(0);
+  const rowsRef = useRef([]);
   const [selectedCell, setSelectedCell] = useState(null);
   const [terms, setTerms] = useState([]);
   const [markingMode, setMarkingMode] = useState(null);
@@ -66,13 +179,17 @@ function TranslationWorkspace({
     });
   }, []);
 
+  // 按表格 ID 分开存储“不再提醒”记录，不同表格互不影响
   useEffect(() => {
-    chrome.storage.local.get(['dismissedInconsistencies'], (result) => {
-      if (result.dismissedInconsistencies) {
-        setDismissedInconsistencies(result.dismissedInconsistencies);
-      }
+    if (!sheet?.id) {
+      setDismissedInconsistencies([]);
+      return;
+    }
+    const key = 'dismissedInconsistencies_' + sheet.id;
+    chrome.storage.local.get([key], (result) => {
+      setDismissedInconsistencies(result[key] || []);
     });
-  }, []);
+  }, [sheet?.id]);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -125,25 +242,8 @@ function TranslationWorkspace({
     return filtered;
   };
 
-  // 每次请求前获取最新 token，避免 prop 中的 token 过期
-  const getFreshToken = () => new Promise((resolve, reject) => {
-    chrome.identity.getAuthToken({ interactive: false }, (t) => {
-      if (chrome.runtime.lastError || !t) {
-        // 过期时先清缓存再重新获取
-        chrome.identity.removeCachedAuthToken({ token: t || '' }, () => {
-          chrome.identity.getAuthToken({ interactive: true }, (newT) => {
-            if (chrome.runtime.lastError || !newT) {
-              reject(new Error('获取授权失败，请重新登录'));
-            } else {
-              resolve(newT);
-            }
-          });
-        });
-      } else {
-        resolve(t);
-      }
-    });
-  });
+  // 每次请求前获取最新 token，避免 prop 中的 token 过期（统一走 utils）
+  const getFreshToken = getFreshTokenUtil;
   const [filteredRowIndices, setFilteredRowIndices] = useState(null);
   const [selectedRows, setSelectedRows] = useState(new Set());
   const dragStateRef = useRef({ isDown: false, startRow: null, startX: 0, startY: 0, isDragging: false });
@@ -152,12 +252,6 @@ function TranslationWorkspace({
     ? rows.filter(row => filteredRowIndices.has(row.index))
     : rows;
 
-  const autoResizeTextarea = (textarea) => {
-    if (!textarea) return;
-    textarea.style.height = 'auto';
-    textarea.style.height = textarea.scrollHeight + 'px';
-  };
-
   const textareaRefCallback = useCallback((el) => {
     if (!el) return;
     const index = parseInt(el.dataset.rowIndex);
@@ -165,14 +259,15 @@ function TranslationWorkspace({
     autoResizeTextarea(el);
   }, []);
 
-  // 当 rows 数据变化时（包括 AI 翻译写回、刷新），重算所有 textarea 高度
+  // 仅在数据整体（重新）加载、AI 写回时重算所有 textarea 高度。
+  // 不能依赖 [rows]，否则每次按键编辑都会触发全量重排，造成严重卡顿。
   useEffect(() => {
     requestAnimationFrame(() => {
       Object.values(textareaRefs.current).forEach(el => {
         if (el) autoResizeTextarea(el);
       });
     });
-  }, [rows]);
+  }, [resizeNonce]);
 
   // AI 翻译完成后自动刷新工作区数据
   useEffect(() => {
@@ -228,6 +323,7 @@ useEffect(() => {
   }, [loadingData, rows, autoCheckTerms, terms]);
 
   useEffect(() => { columnWidthsRef.current = columnWidths; }, [columnWidths]);
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
 
   useEffect(() => {
     if (highlightRow && rows.length > 0 && !loadingData) {
@@ -376,7 +472,7 @@ useEffect(() => {
     };
   };
 
-  const loadSheetData = async (forceRange = null) => {
+  const loadSheetData = async (forceRange = null, keepOnlyRows = null) => {
     try {
       setLoadingData(true);
       setFilteredRowIndices(null);
@@ -410,22 +506,19 @@ useEffect(() => {
       
       const rangeName = sheetTitle ? `${sheetTitle}!${colRange.substring(0, 1)}${startRow}:${colRange.substring(colRange.length - 1)}${endRow}` : `${colRange.substring(0, 1)}${startRow}:${colRange.substring(colRange.length - 1)}${endRow}`;
       
-      const freshToken = await getFreshToken();
-      const response = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}/values/${encodeURIComponent(rangeName)}?majorDimension=ROWS`,
-        { headers: { Authorization: `Bearer ${freshToken}` } }
+      const response = await authedFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}/values/${encodeURIComponent(rangeName)}?majorDimension=ROWS`
       );
-      
+
       if (!response.ok) throw new Error(`加载失败 (${response.status})`);
-      
+
       const data = await response.json();
       const values = data.values || [];
-      
+
       if (!useRange && values.length > 0) {
         try {
-          const metaResponse = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}?fields=sheets.properties.gridProperties.rowCount`,
-            { headers: { Authorization: `Bearer ${freshToken}` } }
+          const metaResponse = await authedFetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}?fields=sheets.properties.gridProperties.rowCount`
           );
           if (metaResponse.ok) {
             const metaData = await metaResponse.json();
@@ -460,9 +553,11 @@ useEffect(() => {
       const pendingEdits = await loadPendingEdits();
 
       const builtRows = values.map((row, i) => {
-        const sourceText = row[colIndexMap.source] || '';
-        const matchedTerms = findMatchingTerms(sourceText);
         const rowNum = startRow + i;
+        const visible = !keepOnlyRows || keepOnlyRows.has(rowNum);
+        const sourceText = row[colIndexMap.source] || '';
+        // 隐藏行不参与术语匹配，省去每行对整个术语表的扫描（筛选全表时的主要 CPU 开销）
+        const matchedTerms = visible ? findMatchingTerms(sourceText) : [];
         return {
           index: rowNum,
           source: sourceText,
@@ -493,7 +588,12 @@ useEffect(() => {
         setDirtyCount(Object.keys(dirtyCellsRef.current).length);
         toast.success(`已恢复 ${restored} 个未同步的本地编辑`, { duration: 3000 });
       }
-      setRows(builtRows);
+      // 筛选全表时：只保留可见行，避免渲染首尾之间成千上万的隐藏行造成卡顿
+      const finalRows = (keepOnlyRows && keepOnlyRows.size > 0)
+        ? builtRows.filter(r => keepOnlyRows.has(r.index))
+        : builtRows;
+      setRows(finalRows);
+      setResizeNonce(n => n + 1);
 
       if (forceRange || useRange) {
         setTotalRows(endRow);
@@ -561,11 +661,10 @@ useEffect(() => {
       const sheetTitle = selectedSheetTitle || (sheet?.title ?? '');
       const rangeName = sheetTitle ? `${sheetTitle}!${colRange}` : colRange;
       
-      const response = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}/values/${encodeURIComponent(rangeName)}?majorDimension=ROWS`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const response = await authedFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}/values/${encodeURIComponent(rangeName)}?majorDimension=ROWS`
       );
-      
+
       if (!response.ok) throw new Error('加载失败');
       
       const data = await response.json();
@@ -620,19 +719,24 @@ useEffect(() => {
     setHighlightRow(null);
   };
 
-  const handleDismissInconsistency = async (item) => {
-    const result = await chrome.storage.local.get(['dismissedInconsistencies']);
-    const dismissed = result.dismissedInconsistencies || [];
-    dismissed.push({
+  const handleDismissInconsistency = (item) => {
+    const entry = {
       row: item.row,
       source: item.source,
       expected: item.expected,
       actual: item.actual,
       dismissedAt: new Date().toISOString()
+    };
+    // 乐观更新：先用内存里的 state 立即更新界面，存储在后台异步写入，
+    // 不再每次点击都串行 await 一次 storage 读+写（数据越多越慢）。
+    setDismissedInconsistencies(prev => {
+      const next = [...prev, entry];
+      if (sheet?.id) {
+        chrome.storage.local.set({ ['dismissedInconsistencies_' + sheet.id]: next });
+      }
+      return next;
     });
-    await chrome.storage.local.set({ dismissedInconsistencies: dismissed });
-    setDismissedInconsistencies(dismissed);
-    const remaining = sidePanel.data.filter(d => 
+    const remaining = sidePanel.data.filter(d =>
       !(d.row === item.row && d.source === item.source && d.expected === item.expected)
     );
     if (remaining.length === 0) {
@@ -691,13 +795,12 @@ useEffect(() => {
       try {
         toast.loading('正在创建新表格...', { id: 'exportSheet' });
         
-        const response = await fetch(
+        const response = await authedFetch(
           'https://sheets.googleapis.com/v4/spreadsheets',
           {
             method: 'POST',
-            headers: { 
-              Authorization: `Bearer ${token}`, 
-              'Content-Type': 'application/json' 
+            headers: {
+              'Content-Type': 'application/json'
             },
             body: JSON.stringify({
               properties: { title: `${sheet?.title || '翻译结果'}_导出` },
@@ -860,16 +963,15 @@ useEffect(() => {
     setRows(newRows);
   };
 
-  const clearRowInconsistency = (rowIndex) => {
+  const clearRowInconsistency = useCallback((rowIndex) => {
     setRows(prevRows => prevRows.map((row, idx) =>
       idx === rowIndex ? { ...row, inconsistent: false, inconsistentReason: '' } : row
     ));
-  };
+  }, []);
 
    const getVisibleRowsFromApi = async () => {
-     const res = await fetch(
-       `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}?includeGridData=true&ranges=${encodeURIComponent(selectedSheetTitle)}&fields=sheets(properties(gridProperties),data(rowMetadata))`,
-       { headers: { Authorization: `Bearer ${token}` } }
+     const res = await authedFetch(
+       `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}?includeGridData=true&ranges=${encodeURIComponent(selectedSheetTitle)}&fields=sheets(properties(gridProperties),data(rowMetadata))`
      );
      if (!res.ok) throw new Error(`API error: ${res.status}`);
      const data = await res.json();
@@ -925,11 +1027,12 @@ useEffect(() => {
        }
        const firstVisible = visibleRows[0];
        const lastVisible = visibleRows[visibleRows.length - 1];
+       const visibleSet = new Set(visibleRows);
        setUseRange(true);
        setRangeStart(firstVisible);
        setRangeEnd(lastVisible);
-       await loadSheetData({ start: firstVisible, end: lastVisible });
-       const visibleSet = new Set(visibleRows);
+       // 只构建/渲染可见行，避免首尾之间的大量隐藏行拖慢加载与编辑
+       await loadSheetData({ start: firstVisible, end: lastVisible }, visibleSet);
        setFilteredRowIndices(visibleSet);
        toast.dismiss('syncFilter');
        toast.success(`已同步筛选：共 ${visibleRows.length} 行可见 (行 ${firstVisible}-${lastVisible})`);
@@ -992,7 +1095,7 @@ useEffect(() => {
     ds.isDown = false;
   };
 
-  const handleRowMouseDown = (rowArrayIndex, e) => {
+  const handleRowMouseDown = useCallback((rowArrayIndex, e) => {
     if (e.shiftKey) {
       e.preventDefault();
       setSelectedRows(prev => {
@@ -1023,9 +1126,9 @@ useEffect(() => {
     ds.startY = e.clientY;
     ds.isDragging = false;
     setSelectedRows(new Set([rowArrayIndex]));
-  };
+  }, []);
 
-  const handleRowMouseMove = (rowArrayIndex, e) => {
+  const handleRowMouseMove = useCallback((rowArrayIndex, e) => {
     const ds = dragStateRef.current;
     if (!ds.isDown) return;
     if (e.buttons !== 1) {
@@ -1046,11 +1149,9 @@ useEffect(() => {
       for (let i = start; i <= end; i++) newSet.add(i);
       setSelectedRows(newSet);
     }
-  };
+  }, []);
 
-  const handleCellSelect = (rowIndex, col, event) => {
-    const row = rows[rowIndex];
-    const text = col === 'source' ? row.source : col === 'intermediate' ? row.intermediate : row.target;
+  const handleCellSelect = useCallback((rowIndex, col, text, event) => {
     setSelectedCell({ rowIndex, col, text });
 
     if (col === 'source') {
@@ -1058,7 +1159,11 @@ useEffect(() => {
     }
 
     if (col === 'source' && text) {
-      const matchedTerms = findTermsInText(text);
+      const currentTerms = termsRef.current;
+      const matchedTerms = currentTerms.filter(t => {
+        if (!t.source) return false;
+        return t.caseSensitive ? text.includes(t.source) : text.toLowerCase().includes(t.source.toLowerCase());
+      });
       if (matchedTerms.length > 0) {
         const rect = event?.currentTarget?.getBoundingClientRect();
         if (rect) {
@@ -1066,7 +1171,7 @@ useEffect(() => {
         }
       }
     }
-  };
+  }, []);
 
   const handleTextSelect = (e) => {
     if (dragStateRef.current.isDragging) return;
@@ -1101,7 +1206,7 @@ useEffect(() => {
         return;
       }
       const newRows = [...rows];
-      newRows[selectedCell.rowIndex].marked = true;
+      newRows[selectedCell.rowIndex] = { ...newRows[selectedCell.rowIndex], marked: true };
       setRows(newRows);
       saveTerm(markingMode.text, selectedTargetText);
       setMarkingMode(null);
@@ -1129,33 +1234,22 @@ useEffect(() => {
     }
   };
 
-  const checkTermReminder = useCallback((text) => {
-    const matched = terms.find(t => {
-      if (!t.source) return false;
-      if (t.caseSensitive) {
-        return text.includes(t.source);
-      } else {
-        return text.toLowerCase().includes(t.source.toLowerCase());
-      }
+  const updateCell = useCallback((rowIndex, value, col) => {
+    // 生成新的行对象（而非原地修改），memo 的子行才能感知到变化只发生在这一行
+    setRows(prev => {
+      if (!prev[rowIndex]) return prev;
+      const next = [...prev];
+      next[rowIndex] = { ...next[rowIndex], [col]: value };
+      return next;
     });
-    if (matched) {
-      return { show: true, translation: matched.target, count: matched.count };
-    }
-    return { show: false };
-  }, [terms]);
 
-  const updateCell = (rowIndex, value, col) => {
-    const newRows = [...rows];
-    newRows[rowIndex][col] = value;
-    setRows(newRows);
-    
     let colLetter;
     if (col === 'source') colLetter = sourceCol;
     else if (col === 'intermediate') colLetter = intermediateCol;
     else colLetter = targetCol;
-    
+
     const sheetTitle = selectedSheetTitle || (sheet?.title ?? '');
-    const sheetRow = rows[rowIndex]?.index || rowIndex + 1;
+    const sheetRow = rowsRef.current[rowIndex]?.index || rowIndex + 1;
     const cellRef = `${colLetter}${sheetRow}`;
     const rangeName = sheetTitle ? `${sheetTitle}!${cellRef}` : cellRef;
     const encodedRange = encodeURIComponent(rangeName);
@@ -1171,13 +1265,11 @@ useEffect(() => {
       const save = pendingSaveRef.current;
       if (!save || !save.sheetId) return;
       try {
-        const freshToken = await getFreshToken();
-        const res = await fetch(
+        const res = await authedFetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${save.sheetId}/values/${save.encodedRange}?valueInputOption=RAW`,
           {
             method: 'PUT',
-            headers: { 
-              Authorization: `Bearer ${freshToken}`,
+            headers: {
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({ values: [[save.value]] })
@@ -1192,7 +1284,7 @@ useEffect(() => {
         console.error('保存失败:', err);
       }
     }, 500);
-  };
+  }, [sourceCol, intermediateCol, targetCol, selectedSheetTitle, sheet?.id, sheet?.title]);
 
   const handleManualSave = async () => {
     const keys = Object.keys(dirtyCellsRef.current);
@@ -1203,16 +1295,15 @@ useEffect(() => {
     toast.loading(`正在保存 ${keys.length} 个单元格...`, { id: 'manualSave' });
     let success = 0;
     let fail = 0;
-    const freshToken = await getFreshToken();
     for (const key of keys) {
       const cell = dirtyCellsRef.current[key];
       if (!cell) continue;
       try {
-        const res = await fetch(
+        const res = await authedFetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}/values/${cell.range}?valueInputOption=RAW`,
           {
             method: 'PUT',
-            headers: { Authorization: `Bearer ${freshToken}`, 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ values: [[cell.value]] })
           }
         );
@@ -1236,15 +1327,17 @@ useEffect(() => {
     }
   };
 
-  const handleTargetBlur = (rowIndex) => {
-    const sourceText = rows[rowIndex]?.source;
-    if (sourceText) {
-      const reminder = checkTermReminder(sourceText);
-      if (reminder.show) {
-        toast(`参考翻译: ${reminder.translation} (出现 ${reminder.count} 次)`, { icon: '💡' });
-      }
+  const handleTargetBlur = useCallback((sourceText) => {
+    if (!sourceText) return;
+    const currentTerms = termsRef.current;
+    const matched = currentTerms.find(t => {
+      if (!t.source) return false;
+      return t.caseSensitive ? sourceText.includes(t.source) : sourceText.toLowerCase().includes(t.source.toLowerCase());
+    });
+    if (matched) {
+      toast(`参考翻译: ${matched.target} (出现 ${matched.count} 次)`, { icon: '💡' });
     }
-  };
+  }, []);
 
   const handleResizeStart = (e, column) => {
     e.preventDefault();
@@ -1495,104 +1588,26 @@ useEffect(() => {
         </div>
         
         <div className="table-body">
-          {rows.map((row, i) => {
-            const isVisible = !filteredRowIndices || filteredRowIndices.has(row.index);
-            return (
-            <div 
+          {rows.map((row, i) => (
+            <TableRow
               key={row.index}
-              data-row-index={i}
-              data-row={row.index}
-              style={!isVisible ? { display: 'none' } : {}}
-              className={`table-row ${row.marked ? 'marked' : ''} ${selectedCell?.rowIndex === i ? 'selected' : ''} ${row.inconsistent ? 'inconsistent' : ''} ${row.highlighted ? 'highlighted' : ''} ${selectedRows.has(i) ? 'multi-selected' : ''}`}
-              onMouseDown={(e) => {
-                const targetCol = e.target.closest('.col-target');
-                if (targetCol) {
-                  if (e.shiftKey || e.ctrlKey || e.metaKey) {
-                    e.preventDefault();
-                    handleRowMouseDown(i, e);
-                    return;
-                  }
-                  if (e.target.tagName !== 'TEXTAREA') {
-                    handleRowMouseDown(i, e);
-                  }
-                }
-              }}
-              onMouseMove={(e) => handleRowMouseMove(i, e)}
-            >
-              <div className="col-num">{row.index}</div>
-              <div 
-                className="col-source"
-                style={{ width: columnWidths.source, minWidth: columnWidths.source }}
-                onClick={(e) => handleCellSelect(i, 'source', e)}
-              >
-                <div className="cell-readonly">{row.source}</div>
-              </div>
-              {showIntermediate && (
-                <div 
-                  className="col-intermediate"
-                  style={{ width: columnWidths.intermediate, minWidth: columnWidths.intermediate }}
-                  onClick={(e) => handleCellSelect(i, 'intermediate', e)}
-                >
-                  <div className="cell-readonly">{row.intermediate}</div>
-                </div>
-              )}
-              <div 
-                className="col-target"
-                style={{ width: columnWidths.target, minWidth: columnWidths.target }}
-                onClick={(e) => handleCellSelect(i, 'target', e)}
-              >
-                  <textarea 
-                    ref={textareaRefCallback}
-                    data-row-index={i}
-                    value={row.target}
-                    onChange={(e) => {
-                      updateCell(i, e.target.value, 'target');
-                      autoResizeTextarea(e.target);
-                    }}
-                    onFocus={(e) => handleCellSelect(i, 'target', e)}
-                    onBlur={() => handleTargetBlur(i)}
-                    placeholder="目标语言..."
-                  />
-                {row.marked && <span className="term-badge">术语</span>}
-                {row.inconsistent && row.inconsistentReason && (
-                  <span className="inconsistent-reason" title={row.inconsistentReason}>⚠</span>
-                )}
-              </div>
-              {showTermsCol && (
-                <div 
-                  className="col-terms"
-                  style={{ width: columnWidths.terms, minWidth: columnWidths.terms }}
-                  onClick={(e) => handleCellSelect(i, 'target', e)}
-                >
-                  {row.matchedTerms && row.matchedTerms.length > 0 ? (
-                    <div className="terms-col-list">
-                      {row.matchedTerms.map((term, ti) => {
-                        const isInconsistent = row.inconsistent && row.target && term.target && row.target.trim() !== term.target.trim();
-                        return (
-                          <div key={ti} className={`terms-col-item ${isInconsistent ? 'terms-col-warn' : ''}`}>
-                            <span className="terms-col-source">{term.source}</span>
-                            <span className="terms-col-arrow">→</span>
-                            <span className="terms-col-target">{term.target}</span>
-                            {term.note && <span className="term-note-icon" title={term.note}>📝</span>}
-                            {isInconsistent && (
-                              <button
-                                className="terms-col-dismiss"
-                                onClick={(e) => { e.stopPropagation(); clearRowInconsistency(i); }}
-                                title="清除不一致标记"
-                              >×</button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <span className="terms-col-empty">-</span>
-                  )}
-                </div>
-              )}
-            </div>
-          )
-        })}
+              row={row}
+              i={i}
+              isVisible={!filteredRowIndices || filteredRowIndices.has(row.index)}
+              isSelectedCell={selectedCell?.rowIndex === i}
+              isMultiSelected={selectedRows.has(i)}
+              columnWidths={columnWidths}
+              showIntermediate={showIntermediate}
+              showTermsCol={showTermsCol}
+              onCellSelect={handleCellSelect}
+              onUpdateCell={updateCell}
+              onTextareaRef={textareaRefCallback}
+              onTargetBlur={handleTargetBlur}
+              onRowMouseDown={handleRowMouseDown}
+              onRowMouseMove={handleRowMouseMove}
+              onClearRowInconsistency={clearRowInconsistency}
+            />
+          ))}
         </div>
 
         {!useRange && totalPages > 1 && (

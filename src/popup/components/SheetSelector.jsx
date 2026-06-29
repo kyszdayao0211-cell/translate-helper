@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
+import { authedFetch } from '../../utils/googleAuth';
 
 function SheetSelector({ token, onSheetSelect, currentSheet }) {
   const [sheetId, setSheetId] = useState('');
@@ -74,13 +75,10 @@ function SheetSelector({ token, onSheetSelect, currentSheet }) {
 
     setLoading(true);
     try {
-      const response = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties.title,sheets.properties.sheetId`,
-        {
-          headers: { Authorization: `Bearer ${token}` }
-        }
+      const response = await authedFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties.title,sheets.properties.sheetId`
       );
-      
+
      if (!response.ok) throw new Error('无法访问表格');
       
       const data = await response.json();

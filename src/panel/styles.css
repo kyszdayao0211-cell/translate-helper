@@ -1077,6 +1077,20 @@
   background: #f57c00;
 }
 
+.delete-lib-btn {
+  background: #e53935;
+  color: white;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.delete-lib-btn:hover {
+  background: #c62828;
+}
+
 .import-panel-overlay {
   position: fixed;
   top: 0;
