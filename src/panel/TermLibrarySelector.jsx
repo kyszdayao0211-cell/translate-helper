@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import TermImportPanel from './TermImportPanel';
 import { authedFetch } from '../utils/googleAuth';
+
+const GLOSSARY_HEADER = ['source', 'target', 'notes'];
 
 function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreadsheetId }) {
   const [libraries, setLibraries] = useState([]);
@@ -15,6 +17,11 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
   const [editingLibName, setEditingLibName] = useState('');
   const [showDocIO, setShowDocIO] = useState(false);
 
+  // 文档术语库 (_glossary) 自动回传云端相关
+  const uploadTimerRef = useRef(null);
+  const skipUploadRef = useRef(false);   // 从云端拉取导致的写入，跳过一次回传
+  const lastUploadedRef = useRef(null);  // 上次已上传内容的快照，避免重复上传
+
   useEffect(() => {
     loadLibraries();
   }, []);
@@ -22,6 +29,41 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
   useEffect(() => {
     setSelectedLibId(currentLibraryId || '');
   }, [currentLibraryId]);
+
+  // 监听术语变化，把文档术语库 (_glossary) 的改动自动回传到云端表格
+  useEffect(() => {
+    if (!spreadsheetId) return;
+    const libId = 'glossary_' + spreadsheetId;
+    const listener = (changes, area) => {
+      if (area !== 'local' || !changes.termLibraries) return;
+      const libs = changes.termLibraries.newValue || [];
+      const lib = libs.find(l => l.id === libId);
+      if (!lib || lib.source !== 'glossary') return;
+      const snapshot = JSON.stringify(lib.terms || []);
+      // 这次写入来自“从云端拉取”，只记录快照、不回传
+      if (skipUploadRef.current) {
+        skipUploadRef.current = false;
+        lastUploadedRef.current = snapshot;
+        return;
+      }
+      if (snapshot === lastUploadedRef.current) return; // 内容没变
+      if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+      uploadTimerRef.current = setTimeout(async () => {
+        try {
+          await uploadGlossaryTerms(lib.terms || []);
+          lastUploadedRef.current = snapshot;
+          toast.success('术语已同步到云端', { id: 'glossarySync', duration: 1500 });
+        } catch (err) {
+          toast.error('云端同步失败: ' + err.message, { id: 'glossarySync' });
+        }
+      }, 1500);
+    };
+    chrome.storage.onChanged.addListener(listener);
+    return () => {
+      chrome.storage.onChanged.removeListener(listener);
+      if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+    };
+  }, [spreadsheetId]);
 
   const loadLibraries = async () => {
     try {
@@ -116,7 +158,8 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
       }
 
       const lib = { ...libs[libIdx] };
-      const isRemote = lib.source === 'remote';
+      // 远程库和文档术语库(glossary)的术语都存在 lib.terms 里
+      const isRemote = lib.source === 'remote' || lib.source === 'glossary';
       const importTerms = importData.terms || [];
 
       // 根据库类型正确加载现有术语
@@ -188,7 +231,7 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
     if (!lib) return;
     
     let termsToExport = [];
-    if (lib.source === 'remote' && lib.terms) {
+    if ((lib.source === 'remote' || lib.source === 'glossary') && lib.terms) {
       termsToExport = lib.terms;
     } else {
       const result = await chrome.storage.local.get(['terms']);
@@ -248,8 +291,9 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
       const libs = (result.termLibraries || []).filter(l => l.id !== selectedLibId);
       const toSet = { termLibraries: libs };
 
-      // 本地库的术语保存在全局 terms 数组里，需一并清理
-      if (lib.source !== 'remote') {
+      // 本地库的术语保存在全局 terms 数组里，需一并清理；
+      // 远程库/文档术语库的术语在 lib.terms 里，随库删除即可
+      if (lib.source !== 'remote' && lib.source !== 'glossary') {
         const allTerms = result.terms || [];
         toSet.terms = allTerms.filter(t => t.libraryId !== selectedLibId);
       }
@@ -269,6 +313,70 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
   function sendBgMessage(msg) {
     return new Promise(resolve => chrome.runtime.sendMessage(msg, resolve));
   }
+
+  // 把术语数组整体写回 _glossary tab（含表头）
+  const uploadGlossaryTerms = async (terms) => {
+    const values = [
+      GLOSSARY_HEADER,
+      ...terms.map(t => [t.source || '', t.target || '', t.note || '']),
+    ];
+    await writeTabFull('_glossary', values);
+  };
+
+  // 绑定当前文档的 _glossary 术语库；不存在时弹窗询问是否创建
+  const bindDocGlossary = async () => {
+    if (!spreadsheetId) { toast.error('请先选择表格'); return; }
+    try {
+      toast.loading('正在读取文档术语库...', { id: 'bindGlossary' });
+      const resp = await sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token });
+      let rows = resp?.data;
+
+      if (rows == null) {
+        // _glossary tab 不存在，询问是否创建
+        toast.dismiss('bindGlossary');
+        if (!window.confirm('此表格还没有术语库（_glossary 标签页），是否现在创建？')) return;
+        toast.loading('正在创建术语库...', { id: 'bindGlossary' });
+        const createResp = await sendBgMessage({ type: 'CREATE_SHEET_TAB', spreadsheetId, tabName: '_glossary' });
+        if (createResp?.error) throw new Error(createResp.error);
+        await uploadGlossaryTerms([]); // 写入表头
+        rows = [GLOSSARY_HEADER];
+      }
+
+      // 解析（跳过表头行）
+      const terms = rows.slice(1)
+        .filter(r => r && r[0])
+        .map(r => ({ source: (r[0] || '').trim(), target: (r[1] || '').trim(), note: (r[2] || '').trim() }));
+
+      const libId = 'glossary_' + spreadsheetId;
+      const result = await chrome.storage.local.get(['termLibraries']);
+      const libs = result.termLibraries || [];
+      const idx = libs.findIndex(l => l.id === libId);
+      const libEntry = {
+        id: libId,
+        name: '文档术语库',
+        language: 'glossary',
+        source: 'glossary',
+        spreadsheetId,
+        sheetName: '_glossary',
+        terms,
+        termCount: terms.length,
+        updatedAt: new Date().toISOString(),
+      };
+      if (idx >= 0) libs[idx] = { ...libs[idx], ...libEntry };
+      else libs.push({ ...libEntry, createdAt: new Date().toISOString() });
+
+      skipUploadRef.current = true; // 这次写入是从云端拉取，别再回传
+      await chrome.storage.local.set({ termLibraries: libs });
+      setLibraries(libs);
+      setSelectedLibId(libId);
+      onLibraryChange(libId);
+      toast.dismiss('bindGlossary');
+      toast.success(`已绑定文档术语库（${terms.length} 条）`);
+    } catch (err) {
+      toast.dismiss('bindGlossary');
+      toast.error('绑定失败: ' + err.message);
+    }
+  };
 
   const handleExportGlossary = async () => {
     if (!spreadsheetId) { toast.error('请先选择表格'); return; }
@@ -371,6 +479,10 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
     }
   };
 
+  // 当前是否已绑定“本文档的术语库”——决定按钮显示“绑定”还是“刷新”
+  const glossaryLibId = spreadsheetId ? 'glossary_' + spreadsheetId : null;
+  const isGlossaryBound = !!glossaryLibId && selectedLibId === glossaryLibId;
+
   return (
     <div className="term-library-selector">
       <div className="lib-header">
@@ -393,11 +505,20 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
         >
           {showNewForm ? '取消' : '+ 新建'}
         </button>
-        <button 
+        <button
           className="import-lib-btn"
           onClick={() => setShowImportPanel(true)}
         >
           导入
+        </button>
+        <button
+          className="bind-glossary-btn"
+          onClick={bindDocGlossary}
+          title={isGlossaryBound
+            ? '从云端重新拉取 _glossary 最新术语（别的设备/他人改动后用）'
+            : '绑定当前文档的 _glossary 术语库，换设备登录同一账号可自动同步'}
+        >
+          {isGlossaryBound ? '🔄 刷新术语库' : '📌 绑定文档术语库'}
         </button>
         {selectedLibId && (
           <>

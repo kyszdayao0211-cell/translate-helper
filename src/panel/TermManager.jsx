@@ -30,7 +30,7 @@ function TermManager({ token }) {
     let filteredTerms = allTerms;
     if (selectedLibraryId) {
       const lib = libs.find(l => l.id === selectedLibraryId);
-      if (lib?.source === 'remote' && lib?.terms) {
+      if ((lib?.source === 'remote' || lib?.source === 'glossary') && lib?.terms) {
         filteredTerms = lib.terms;
       } else {
         filteredTerms = allTerms.filter(t => t.libraryId === selectedLibraryId);
@@ -58,7 +58,7 @@ function TermManager({ token }) {
       const libsResult = await chrome.storage.local.get(['termLibraries']);
       const libs = libsResult.termLibraries || [];
       const libIdx = libs.findIndex(l => l.id === selectedLibraryId);
-      if (libIdx >= 0 && libs[libIdx].source === 'remote') {
+      if (libIdx >= 0 && (libs[libIdx].source === 'remote' || libs[libIdx].source === 'glossary')) {
         const lib = { ...libs[libIdx] };
         lib.terms = (lib.terms || []).filter(t => t.source !== sourceText);
         lib.termCount = lib.terms.length;
@@ -93,7 +93,7 @@ function TermManager({ token }) {
       const libsResult = await chrome.storage.local.get(['termLibraries']);
       const libraries = libsResult.termLibraries || [];
       const libIdx = libraries.findIndex(l => l.id === selectedLibraryId);
-      if (libIdx >= 0 && libraries[libIdx].source === 'remote') {
+      if (libIdx >= 0 && (libraries[libIdx].source === 'remote' || libraries[libIdx].source === 'glossary')) {
         const lib = { ...libraries[libIdx] };
         const existingIdx = (lib.terms || []).findIndex(t => t.source === newTermSource.trim());
         if (existingIdx >= 0) {
@@ -162,7 +162,7 @@ function TermManager({ token }) {
       const libsResult = await chrome.storage.local.get(['termLibraries']);
       const libs = libsResult.termLibraries || [];
       const libIdx = libs.findIndex(l => l.id === selectedLibraryId);
-      if (libIdx >= 0 && libs[libIdx].source === 'remote') {
+      if (libIdx >= 0 && (libs[libIdx].source === 'remote' || libs[libIdx].source === 'glossary')) {
         const lib = { ...libs[libIdx] };
         lib.terms = (lib.terms || []).map(t =>
           t.source === editingTerm.originalSource

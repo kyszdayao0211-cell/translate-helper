@@ -1049,6 +1049,20 @@
   background: #7b1fa2;
 }
 
+.bind-glossary-btn {
+  background: #1565c0;
+  color: white;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bind-glossary-btn:hover {
+  background: #0d47a1;
+}
+
 .merge-import-lib-btn {
   background: #00897b;
   color: white;

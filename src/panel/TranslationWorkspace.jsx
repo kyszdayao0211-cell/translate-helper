@@ -361,7 +361,7 @@ useEffect(() => {
       if (termLibraryBindingId) {
         const lib = libraries.find(l => l.id === termLibraryBindingId);
         if (lib) {
-          if (lib.source === 'remote' && lib.terms) {
+          if ((lib.source === 'remote' || lib.source === 'glossary') && lib.terms) {
             filteredTerms = lib.terms;
           } else {
             filteredTerms = allTerms.filter(t => t.libraryId === termLibraryBindingId);
@@ -874,7 +874,7 @@ useEffect(() => {
       const libsResult = await chrome.storage.local.get(['termLibraries']);
       const libraries = libsResult.termLibraries || [];
       const libIdx = libraries.findIndex(l => l.id === termLibraryBindingId);
-      if (libIdx >= 0 && libraries[libIdx].source === 'remote') {
+      if (libIdx >= 0 && (libraries[libIdx].source === 'remote' || libraries[libIdx].source === 'glossary')) {
         const lib = { ...libraries[libIdx] };
         const existingIdx = (lib.terms || []).findIndex(t => t.source === sourceText);
         if (existingIdx >= 0) {

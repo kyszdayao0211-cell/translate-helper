@@ -95,6 +95,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(err => sendResponse({ error: err.message }));
     return true;
   }
+
+  if (request.type === 'CREATE_SHEET_TAB') {
+    createSheetTab(request.spreadsheetId, request.tabName)
+      .then(() => sendResponse({ success: true }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
 });
 
 async function translateWithAI(apiKey, apiType, endpoint, model, systemPrompt, texts) {
@@ -234,6 +241,27 @@ async function batchWriteCells(spreadsheetId, sheetTitle, updates, token) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error?.message || `写入失败: ${res.status}`);
+  }
+}
+
+// 新建一个工作表标签页（如 _glossary）。若同名 tab 已存在，Google 会报错，这里当作成功忽略。
+async function createSheetTab(spreadsheetId, tabName) {
+  const res = await bgAuthedFetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requests: [{ addSheet: { properties: { title: tabName } } }],
+      }),
+    }
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const msg = err?.error?.message || `创建标签页失败: ${res.status}`;
+    // 已存在同名 tab 时不算错误
+    if (/already exists/i.test(msg)) return;
+    throw new Error(msg);
   }
 }
 
