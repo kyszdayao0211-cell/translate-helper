@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import toast from 'react-hot-toast';
 import Login from '../popup/components/Login';
 import SheetSelector from '../popup/components/SheetSelector';
 import TranslationWorkspace from './TranslationWorkspace';
@@ -178,12 +179,66 @@ function Panel() {
     setShowSetup(true);
   };
 
+  // 一键备份：把扩展的全部本地数据(术语库、设置等)导出为 JSON 文件
+  const handleBackup = () => {
+    chrome.storage.local.get(null, (data) => {
+      try {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'translate-helper-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+        toast.success('已导出备份，请把文件转移到你的个人存储');
+      } catch (err) {
+        toast.error('备份失败: ' + err.message);
+      }
+    });
+  };
+
+  // 一键恢复：从备份 JSON 覆盖写回本地数据
+  const handleRestore = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+          throw new Error('文件格式不正确');
+        }
+        if (!window.confirm('恢复会用备份内容覆盖当前的术语库和设置，确定继续吗？')) return;
+        await chrome.storage.local.set(data);
+        toast.success('恢复完成，即将刷新界面');
+        setTimeout(() => window.location.reload(), 800);
+      } catch (err) {
+        toast.error('恢复失败: ' + err.message);
+      }
+    };
+    input.click();
+  };
+
   if (!token) {
     return <Login onLogin={setToken} />;
   }
 
   return (
     <div className="panel-container">
+      <div className="panel-data-bar">
+        <span className="panel-data-bar-label">数据备份:</span>
+        <button className="backup-btn" onClick={handleBackup} title="导出全部术语库和设置为 JSON 文件">
+          备份数据
+        </button>
+        <button className="restore-btn" onClick={handleRestore} title="从备份 JSON 恢复（会覆盖当前数据）">
+          恢复数据
+        </button>
+      </div>
+
       {currentSheet && !showSetup && (
         <div className="panel-toolbar">
           <div className="toolbar-left">

@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { authedFetch } from '../utils/googleAuth';
 
-function buildSystemPrompt(glossaryRows, guideText, localTerms) {
+function buildSystemPrompt(glossaryRows, guideText, localTerms, targetLang) {
+  const lang = (targetLang || '').trim() || '韩语';
   const allTerms = [];
   const seen = new Set();
 
@@ -27,7 +28,7 @@ function buildSystemPrompt(glossaryRows, guideText, localTerms) {
     ? allTerms.map(t => `${t.source} → ${t.target}${t.notes ? `（${t.notes}）` : ''}`).join('\n')
     : '（无）';
 
-  return `你是专业游戏本地化译者，目标语言为韩语（ko-KR）。请严格遵守以下术语库和翻译指导。
+  return `你是专业游戏本地化译者，目标语言为${lang}。请严格遵守以下术语库和翻译指导。
 
 ## 术语库
 ${glossarySection}
@@ -35,7 +36,7 @@ ${glossarySection}
 ## 翻译指导
 ${guideText || '（无）'}
 
-请将用户提供的文本按行翻译为韩语。
+请将用户提供的文本按行翻译为${lang}。
 以 JSON 数组格式返回，与输入行顺序严格对应。
 只返回译文文本，不要添加任何解释或编号。
 示例返回格式：["译文1", "译文2", "译文3"]`;
@@ -48,6 +49,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
   const [guideStatus, setGuideStatus] = useState('未加载');
   const [startRow, setStartRow] = useState('2');
   const [endRow, setEndRow] = useState('');
+  const [targetLang, setTargetLang] = useState('韩语');
   const [forceOverwrite, setForceOverwrite] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -87,6 +89,26 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
       loadGlossaryAndGuide();
     }
   }, [spreadsheetId, token]);
+
+  // 按表格读取上次填写的目标语言（没有则默认韩语）
+  useEffect(() => {
+    if (!spreadsheetId) return;
+    chrome.storage.local.get(['aiTargetLangMap'], (result) => {
+      const map = result.aiTargetLangMap || {};
+      setTargetLang(map[spreadsheetId] || '韩语');
+    });
+  }, [spreadsheetId]);
+
+  // 修改目标语言：即时生效，并按表格记住
+  const handleTargetLangChange = (value) => {
+    setTargetLang(value);
+    if (!spreadsheetId) return;
+    chrome.storage.local.get(['aiTargetLangMap'], (result) => {
+      const map = result.aiTargetLangMap || {};
+      map[spreadsheetId] = value;
+      chrome.storage.local.set({ aiTargetLangMap: map });
+    });
+  };
 
   const loadGlossaryAndGuide = async () => {
     if (!spreadsheetId || !token) {
@@ -204,7 +226,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
     const batchSize = cfg.batchSize || 50;
     const bindingId = cfg.sheetSettings?.termLibraryBindingId || null;
     const localTerms = await getLocalTerms(bindingId);
-    const systemPrompt = buildSystemPrompt(glossaryRows, guideText, localTerms);
+    const systemPrompt = buildSystemPrompt(glossaryRows, guideText, localTerms, targetLang);
 
     const start = parseInt(startRow, 10) || 2;
     const end = endRow ? parseInt(endRow, 10) : null;
@@ -358,7 +380,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
 
     const bindingId = cfg.sheetSettings?.termLibraryBindingId || null;
     const localTerms = await getLocalTerms(bindingId);
-    const systemPrompt = buildSystemPrompt(glossaryRows, guideText, localTerms);
+    const systemPrompt = buildSystemPrompt(glossaryRows, guideText, localTerms, targetLang);
 
     setIsRunning(true);
     setIsPaused(false);
@@ -554,6 +576,18 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
       </div>
 
       <div className="ai-config-section">
+        <div className="ai-lang-row">
+          <label>目标语言:</label>
+          <input
+            type="text"
+            value={targetLang}
+            onChange={e => handleTargetLangChange(e.target.value)}
+            placeholder="如 韩语 / 英语 / 日语"
+            className="ai-lang-input"
+            disabled={isRunning}
+          />
+          <span className="ai-config-hint">留空默认韩语</span>
+        </div>
         <div className="ai-range-row">
           <label>翻译范围:</label>
           <span>第</span>
