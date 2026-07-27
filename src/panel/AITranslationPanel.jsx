@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { authedFetch } from '../utils/googleAuth';
+import { extractGuideFromFile } from '../utils/docx';
 
 function buildSystemPrompt(glossaryRows, guideText, localTerms, targetLang) {
   const lang = (targetLang || '').trim() || '韩语';
@@ -50,6 +51,10 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
   const [startRow, setStartRow] = useState('2');
   const [endRow, setEndRow] = useState('');
   const [targetLang, setTargetLang] = useState('韩语');
+  const [localGuide, setLocalGuide] = useState('');
+  const [localGuideName, setLocalGuideName] = useState('');
+  const [parsingGuide, setParsingGuide] = useState(false);
+  const guideFileInputRef = useRef(null);
   const [forceOverwrite, setForceOverwrite] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -109,6 +114,70 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
       chrome.storage.local.set({ aiTargetLangMap: map });
     });
   };
+
+  // 按表格读取本地上传/粘贴的翻译指南
+  useEffect(() => {
+    if (!spreadsheetId) { setLocalGuide(''); setLocalGuideName(''); return; }
+    chrome.storage.local.get(['aiGuideMap'], (result) => {
+      const map = result.aiGuideMap || {};
+      const entry = map[spreadsheetId] || {};
+      setLocalGuide(entry.text || '');
+      setLocalGuideName(entry.fileName || '');
+    });
+  }, [spreadsheetId]);
+
+  // 保存本地翻译指南（按表格）
+  const persistLocalGuide = (text, fileName) => {
+    if (!spreadsheetId) return;
+    chrome.storage.local.get(['aiGuideMap'], (result) => {
+      const map = result.aiGuideMap || {};
+      if (!text || !text.trim()) {
+        delete map[spreadsheetId];
+      } else {
+        map[spreadsheetId] = { text, fileName: fileName || '' };
+      }
+      chrome.storage.local.set({ aiGuideMap: map });
+    });
+  };
+
+  const handleLocalGuideChange = (value) => {
+    setLocalGuide(value);
+    // 手动编辑后，来源标记为「手动输入」
+    setLocalGuideName('');
+    persistLocalGuide(value, '');
+  };
+
+  const handleGuideFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // 允许再次选择同一文件
+    if (!file) return;
+    setParsingGuide(true);
+    try {
+      const text = await extractGuideFromFile(file);
+      if (!text) {
+        toast('文件里没读到文字内容', { icon: 'ℹ️' });
+        return;
+      }
+      setLocalGuide(text);
+      setLocalGuideName(file.name);
+      persistLocalGuide(text, file.name);
+      toast.success(`已导入翻译指南：${file.name}`);
+    } catch (err) {
+      toast.error('读取失败: ' + err.message);
+    } finally {
+      setParsingGuide(false);
+    }
+  };
+
+  const handleClearLocalGuide = () => {
+    setLocalGuide('');
+    setLocalGuideName('');
+    persistLocalGuide('', '');
+  };
+
+  // 合并表格 _guide 和本地上传的指南，一起喂给 AI
+  const buildCombinedGuide = () =>
+    [guideText, localGuide].filter(s => s && s.trim()).join('\n\n');
 
   const loadGlossaryAndGuide = async () => {
     if (!spreadsheetId || !token) {
@@ -226,7 +295,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
     const batchSize = cfg.batchSize || 50;
     const bindingId = cfg.sheetSettings?.termLibraryBindingId || null;
     const localTerms = await getLocalTerms(bindingId);
-    const systemPrompt = buildSystemPrompt(glossaryRows, guideText, localTerms, targetLang);
+    const systemPrompt = buildSystemPrompt(glossaryRows, buildCombinedGuide(), localTerms, targetLang);
 
     const start = parseInt(startRow, 10) || 2;
     const end = endRow ? parseInt(endRow, 10) : null;
@@ -380,7 +449,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
 
     const bindingId = cfg.sheetSettings?.termLibraryBindingId || null;
     const localTerms = await getLocalTerms(bindingId);
-    const systemPrompt = buildSystemPrompt(glossaryRows, guideText, localTerms, targetLang);
+    const systemPrompt = buildSystemPrompt(glossaryRows, buildCombinedGuide(), localTerms, targetLang);
 
     setIsRunning(true);
     setIsPaused(false);
@@ -587,6 +656,49 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
             disabled={isRunning}
           />
           <span className="ai-config-hint">留空默认韩语</span>
+        </div>
+        <div className="ai-guide-row">
+          <div className="ai-guide-head">
+            <label>翻译指南:</label>
+            <input
+              ref={guideFileInputRef}
+              type="file"
+              accept=".docx,.txt,.md"
+              style={{ display: 'none' }}
+              onChange={handleGuideFileUpload}
+            />
+            <button
+              className="ai-guide-upload-btn"
+              onClick={() => guideFileInputRef.current?.click()}
+              disabled={isRunning || parsingGuide}
+              title="上传 Word(.docx) 或 txt 文档作为 AI 翻译参考的指南"
+            >
+              {parsingGuide ? '解析中...' : '上传 Word/txt'}
+            </button>
+            {localGuide && (
+              <button
+                className="ai-guide-clear-btn"
+                onClick={handleClearLocalGuide}
+                disabled={isRunning}
+                title="清空本地翻译指南"
+              >
+                清空
+              </button>
+            )}
+            <span className="ai-config-hint">
+              {localGuideName
+                ? `来源：${localGuideName}`
+                : (localGuide ? '来源：手动输入' : '可上传或直接粘贴')}
+            </span>
+          </div>
+          <textarea
+            className="ai-guide-textarea"
+            value={localGuide}
+            onChange={e => handleLocalGuideChange(e.target.value)}
+            placeholder="把翻译指南 Word 文档上传到这里，或直接粘贴指南文本。会连同表格里的 _glossary / _guide 一起作为 AI 翻译的参考。"
+            rows={4}
+            disabled={isRunning || parsingGuide}
+          />
         </div>
         <div className="ai-range-row">
           <label>翻译范围:</label>
