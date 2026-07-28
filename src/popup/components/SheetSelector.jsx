@@ -13,8 +13,10 @@ function SheetSelector({ token, onSheetSelect, currentSheet }) {
 
   useEffect(() => {
     loadRecentIds();
-    loadSavedSettings();
-    detectCurrentSheet();
+    (async () => {
+      const id = await detectCurrentSheet();
+      await loadSavedSettings(id);
+    })();
   }, []);
 
   const detectCurrentSheet = async () => {
@@ -33,19 +35,28 @@ function SheetSelector({ token, onSheetSelect, currentSheet }) {
     }
   };
 
-  const loadSavedSettings = async () => {
-    const result = await chrome.storage.local.get(['sheetSettings']);
-    const ss = result.sheetSettings;
-    if (ss?.sourceCol) setSourceCol(ss.sourceCol);
-    if (ss?.targetCol) setTargetCol(ss.targetCol);
+  const loadSavedSettings = async (detectedId) => {
+    const result = await chrome.storage.local.get(['sheetSettings', 'sheetSettingsMap']);
+    const ss = result.sheetSettings || {};
+    const map = result.sheetSettingsMap || {};
+    // 优先用该表格自己保存过的列配置，没有再用全局默认
+    const perSheet = (detectedId && map[detectedId]) ? map[detectedId] : ss;
+    if (perSheet?.sourceCol) setSourceCol(perSheet.sourceCol);
+    if (perSheet?.targetCol) setTargetCol(perSheet.targetCol);
   };
 
-  const saveSettings = async (settings) => {
-    const result = await chrome.storage.local.get(['sheetSettings']);
+  // 把选中的表格 + tab + 列一次性写进 storage（与工作面板读取的结构保持一致）
+  // - sheetSettings.sheet 决定工作面板打开哪个表
+  // - sheetSettingsMap[表格ID] 决定该表的列，会覆盖全局列，所以必须一并写入
+  const persistSelection = async (sheetObj, sCol, tCol) => {
+    const result = await chrome.storage.local.get(['sheetSettings', 'sheetSettingsMap']);
     const current = result.sheetSettings || {};
-    await chrome.storage.local.set({
-      sheetSettings: { ...current, ...settings }
-    });
+    const map = result.sheetSettingsMap || {};
+    const merged = { ...current, sheet: sheetObj, sourceCol: sCol, targetCol: tCol };
+    if (sheetObj?.id) {
+      map[sheetObj.id] = { ...(map[sheetObj.id] || {}), sourceCol: sCol, targetCol: tCol };
+    }
+    await chrome.storage.local.set({ sheetSettings: merged, sheetSettingsMap: map });
   };
 
   const loadRecentIds = async () => {
@@ -88,16 +99,19 @@ function SheetSelector({ token, onSheetSelect, currentSheet }) {
       })) || [];
       setSheets(list);
       
-      await saveRecentId(sheetId.trim());
-      
-      await saveSettings({ sourceCol, targetCol });
-      
+      const cleanId = sheetId.trim();
+      await saveRecentId(cleanId);
+
       if (list.length > 0) {
         const first = list[0];
+        const sheetObj = { id: cleanId, sheetId: first.id, title: first.title };
         setSelectedTitle(first.title);
-        onSheetSelect({ id: sheetId, sheetId: first.id, title: first.title });
+        await persistSelection(sheetObj, sourceCol, targetCol);
+        onSheetSelect(sheetObj);
       } else {
-        onSheetSelect({ id: sheetId, title: '' });
+        const sheetObj = { id: cleanId, title: '' };
+        await persistSelection(sheetObj, sourceCol, targetCol);
+        onSheetSelect(sheetObj);
       }
       toast.success('表格加载成功');
     } catch (err) {
@@ -109,6 +123,19 @@ function SheetSelector({ token, onSheetSelect, currentSheet }) {
 
   const handleRecentSelect = (id) => {
     setSheetId(id);
+  };
+
+  // 列变更时，如果已经加载了表格，就实时同步到 storage，避免"改了列不生效"
+  const handleColChange = (which, rawValue) => {
+    const val = rawValue.toUpperCase();
+    const nextSource = which === 'source' ? val : sourceCol;
+    const nextTarget = which === 'target' ? val : targetCol;
+    if (which === 'source') setSourceCol(val); else setTargetCol(val);
+    if (sheets.length > 0 && selectedTitle) {
+      const s = sheets.find(x => x.title === selectedTitle);
+      const sheetObj = { id: sheetId.trim(), sheetId: s?.id, title: selectedTitle };
+      persistSelection(sheetObj, nextSource, nextTarget);
+    }
   };
 
   return (
@@ -154,20 +181,20 @@ function SheetSelector({ token, onSheetSelect, currentSheet }) {
 
       <div className="input-group">
         <label>源语言列</label>
-        <input 
-          type="text" 
+        <input
+          type="text"
           value={sourceCol}
-          onChange={(e) => setSourceCol(e.target.value.toUpperCase())}
+          onChange={(e) => handleColChange('source', e.target.value)}
           placeholder="如: A"
         />
       </div>
 
       <div className="input-group">
         <label>目标语言列</label>
-        <input 
-          type="text" 
+        <input
+          type="text"
           value={targetCol}
-          onChange={(e) => setTargetCol(e.target.value.toUpperCase())}
+          onChange={(e) => handleColChange('target', e.target.value)}
           placeholder="如: B"
         />
       </div>
@@ -183,7 +210,9 @@ function SheetSelector({ token, onSheetSelect, currentSheet }) {
             const title = e.target.value;
             setSelectedTitle(title);
             const s = sheets.find(x => x.title === title);
-            onSheetSelect({ id: sheetId, sheetId: s?.id, title: s?.title ?? title });
+            const sheetObj = { id: sheetId.trim(), sheetId: s?.id, title: s?.title ?? title };
+            persistSelection(sheetObj, sourceCol, targetCol);
+            onSheetSelect(sheetObj);
           }}>
             {sheets.map(s => (
               <option key={s.id} value={s.title}>{s.title}</option>

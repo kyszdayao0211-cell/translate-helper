@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback, useRef, memo } from 'react';
 import toast from 'react-hot-toast';
 import { authedFetch, getFreshToken as getFreshTokenUtil } from '../utils/googleAuth';
 
+// 疑问标记在原表目标列使用的背景色（淡紫色，和常见的黄/绿/红区分开，方便按颜色筛选）
+const QUESTION_FLAG_COLOR = { red: 0.81, green: 0.71, blue: 0.90 };
+
 function autoResizeTextarea(textarea) {
   if (!textarea) return;
   textarea.style.height = 'auto';
@@ -15,6 +18,7 @@ const TableRow = memo(function TableRow({
   columnWidths, showIntermediate, showTermsCol,
   onCellSelect, onUpdateCell, onTextareaRef, onTargetBlur,
   onRowMouseDown, onRowMouseMove, onClearRowInconsistency,
+  isFlagged, flagNote, onToggleFlag, onFlagNote,
 }) {
   return (
     <div
@@ -75,6 +79,14 @@ const TableRow = memo(function TableRow({
         {row.inconsistent && row.inconsistentReason && (
           <span className="inconsistent-reason" title={row.inconsistentReason}>⚠</span>
         )}
+        <button
+          className={`row-flag-btn ${isFlagged ? 'flagged' : ''} ${isFlagged && flagNote ? 'has-note' : ''}`}
+          onClick={(e) => { e.stopPropagation(); onToggleFlag(i); }}
+          onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onFlagNote(i); }}
+          title={isFlagged
+            ? `疑问：${flagNote || '(无备注)'}\n左键取消标记 · 右键编辑备注`
+            : '左键标记疑问（标色）· 右键标记并加备注'}
+        >🚩{isFlagged && flagNote ? <span className="row-flag-note-dot">📝</span> : null}</button>
       </div>
       {showTermsCol && (
         <div
@@ -150,6 +162,8 @@ function TranslationWorkspace({
   const [sidePanel, setSidePanel] = useState({ visible: false, data: [] });
   const [highlightRow, setHighlightRow] = useState(null);
   const [dismissedInconsistencies, setDismissedInconsistencies] = useState([]);
+  // 疑问标记：{ [表格行号]: { note } }，标记时同步给原表目标列标色+批注
+  const [flaggedMap, setFlaggedMap] = useState({});
   const hasCheckedRef = useRef(false);
   const workspaceRef = useRef(null);
   const resizingRef = useRef(null);
@@ -190,6 +204,18 @@ function TranslationWorkspace({
       setDismissedInconsistencies(result[key] || []);
     });
   }, [sheet?.id]);
+
+  // 疑问标记按 表格ID + 工作表标题 分开存储（不同 tab 行号会重复，必须区分）
+  const flagStorageKey = () =>
+    `questionFlags_${sheet?.id}__${selectedSheetTitle || sheet?.title || ''}`;
+
+  useEffect(() => {
+    if (!sheet?.id) { setFlaggedMap({}); return; }
+    const key = flagStorageKey();
+    chrome.storage.local.get([key], (result) => {
+      setFlaggedMap(result[key] || {});
+    });
+  }, [sheet?.id, selectedSheetTitle]);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
@@ -717,6 +743,120 @@ useEffect(() => {
   const closeSidePanel = () => {
     setSidePanel({ visible: false, data: [] });
     setHighlightRow(null);
+  };
+
+  // 把当前不一致列表（用户已筛掉"不再提醒"的，剩下需要确认的）导出为 CSV
+  const handleExportInconsistencies = () => {
+    const rows = sidePanel.data || [];
+    if (!rows.length) {
+      toast.error('没有可导出的不一致项');
+      return;
+    }
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const header = ['行号', '源文本', '术语库标准译法', '当前实际译法'];
+    const body = rows.map(item => [item.row, item.source, item.expected, item.actual].map(esc).join(','));
+    const csv = '﻿' + [header.map(esc).join(','), ...body].join('\r\n');
+
+    const sheetTitle = selectedSheetTitle || sheet?.title || '表格';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `术语不一致_${sheetTitle}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success(`已导出 ${rows.length} 处待确认的不一致`);
+  };
+
+  // 取当前工作表的数字 sheetId（gid），批注/标色的 API 需要它
+  const getNumericSheetId = () => {
+    const title = selectedSheetTitle || sheet?.title;
+    const found = (sheets || []).find(s => s.title === title);
+    return found ? found.id : null;
+  };
+
+  // 给原表目标列某一行写背景色+批注；note 传 null 表示清除标记
+  const writeFlagToSheet = async (rowNum, note) => {
+    const numericSheetId = getNumericSheetId();
+    if (numericSheetId == null) throw new Error('未找到工作表 ID，请先刷新');
+    const columnIndex = colToIndex(targetCol);
+    const isClear = note === null;
+    const cellValue = isClear
+      ? { userEnteredFormat: { backgroundColor: { red: 1, green: 1, blue: 1 } }, note: '' }
+      : { userEnteredFormat: { backgroundColor: QUESTION_FLAG_COLOR }, note };
+    const body = {
+      requests: [{
+        updateCells: {
+          rows: [{ values: [cellValue] }],
+          fields: 'userEnteredFormat.backgroundColor,note',
+          start: { sheetId: numericSheetId, rowIndex: rowNum - 1, columnIndex },
+        },
+      }],
+    };
+    const res = await authedFetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}:batchUpdate`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `写入失败: ${res.status}`);
+    }
+  };
+
+  // 左键点 🚩：直接标记/取消，不弹备注（大多数情况用这个）
+  const handleToggleFlag = async (i) => {
+    const row = rowsRef.current[i];
+    if (!row) return;
+    const rowNum = row.index;
+    const existing = flaggedMap[rowNum];
+    const removing = !!existing;
+
+    toast.loading(removing ? '正在取消标记...' : '正在标记...', { id: 'flagRow' });
+    try {
+      // 取消时传 null 清除；标记时保留已有备注（一般为空）
+      await writeFlagToSheet(rowNum, removing ? null : (existing?.note ?? ''));
+      setFlaggedMap(prev => {
+        const next = { ...prev };
+        if (removing) delete next[rowNum];
+        else next[rowNum] = { note: existing?.note ?? '' };
+        if (sheet?.id) chrome.storage.local.set({ [flagStorageKey()]: next });
+        return next;
+      });
+      toast.dismiss('flagRow');
+      toast.success(removing ? '已取消该行疑问标记' : '已标记疑问');
+    } catch (err) {
+      toast.dismiss('flagRow');
+      toast.error('操作失败: ' + err.message);
+    }
+  };
+
+  // 右键 🚩：添加/编辑备注（并确保该行已标记）
+  const handleFlagNote = async (i) => {
+    const row = rowsRef.current[i];
+    if (!row) return;
+    const rowNum = row.index;
+    const existing = flaggedMap[rowNum];
+
+    const input = window.prompt('填写/编辑该行疑问备注（会写入原表目标列单元格批注）：', existing?.note || '');
+    if (input === null) return; // 用户取消
+    const note = input.trim();
+
+    toast.loading('正在写入备注...', { id: 'flagRow' });
+    try {
+      await writeFlagToSheet(rowNum, note); // 设色+写批注，未标记的会一并标上
+      setFlaggedMap(prev => {
+        const next = { ...prev, [rowNum]: { note } };
+        if (sheet?.id) chrome.storage.local.set({ [flagStorageKey()]: next });
+        return next;
+      });
+      toast.dismiss('flagRow');
+      toast.success(note ? '疑问备注已保存' : '已清空备注（仍保留标记）');
+    } catch (err) {
+      toast.dismiss('flagRow');
+      toast.error('操作失败: ' + err.message);
+    }
   };
 
   const handleDismissInconsistency = (item) => {
@@ -1606,6 +1746,10 @@ useEffect(() => {
               onRowMouseDown={handleRowMouseDown}
               onRowMouseMove={handleRowMouseMove}
               onClearRowInconsistency={clearRowInconsistency}
+              isFlagged={!!flaggedMap[row.index]}
+              flagNote={flaggedMap[row.index]?.note || ''}
+              onToggleFlag={handleToggleFlag}
+              onFlagNote={handleFlagNote}
             />
           ))}
         </div>
@@ -1638,7 +1782,16 @@ useEffect(() => {
         <div className="inconsistency-side-panel">
           <div className="side-panel-header">
             <h3>术语不一致列表</h3>
-            <button className="side-panel-close" onClick={closeSidePanel}>×</button>
+            <div className="side-panel-header-actions">
+              <button
+                className="side-panel-export-btn"
+                onClick={handleExportInconsistencies}
+                title="把当前列表（已排除「不再提醒」的）导出为 CSV，方便逐条确认术语"
+              >
+                导出 CSV
+              </button>
+              <button className="side-panel-close" onClick={closeSidePanel}>×</button>
+            </div>
           </div>
           <div className="side-panel-body">
             <p className="side-panel-summary">共 {sidePanel.data.length} 处不一致</p>
