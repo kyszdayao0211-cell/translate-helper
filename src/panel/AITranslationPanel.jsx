@@ -45,9 +45,7 @@ ${guideText || '（无）'}
 
 function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationDone }) {
   const [glossaryRows, setGlossaryRows] = useState(null);
-  const [guideText, setGuideText] = useState(null);
   const [glossaryStatus, setGlossaryStatus] = useState('未加载');
-  const [guideStatus, setGuideStatus] = useState('未加载');
   const [startRow, setStartRow] = useState('2');
   const [endRow, setEndRow] = useState('');
   const [targetLang, setTargetLang] = useState('韩语');
@@ -175,27 +173,17 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
     persistLocalGuide('', '');
   };
 
-  // 合并表格 _guide 和本地上传的指南，一起喂给 AI
-  const buildCombinedGuide = () =>
-    [guideText, localGuide].filter(s => s && s.trim()).join('\n\n');
-
   const loadGlossaryAndGuide = async () => {
     if (!spreadsheetId || !token) {
       setGlossaryStatus('请先选择表格');
-      setGuideStatus('请先选择表格');
       setGlossaryRows([]);
-      setGuideText('');
       return;
     }
     setGlossaryStatus('加载中...');
-    setGuideStatus('加载中...');
 
     try {
       const freshToken = await getFreshToken();
-      const [glossaryResp, guideResp] = await Promise.all([
-        sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token: freshToken }),
-        sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_guide', token: freshToken }),
-      ]);
+      const glossaryResp = await sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token: freshToken });
 
       if (glossaryResp?.data && glossaryResp.data.length > 0) {
         setGlossaryRows(glossaryResp.data);
@@ -205,20 +193,9 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
         setGlossaryRows([]);
         setGlossaryStatus('未找到 _glossary tab（将使用本地术语库）');
       }
-
-      if (guideResp?.data && guideResp.data.length > 0) {
-        const text = guideResp.data.map(r => r[0] || '').join('\n').trim();
-        setGuideText(text);
-        setGuideStatus(text ? '已加载' : '内容为空');
-      } else {
-        setGuideText('');
-        setGuideStatus('未找到 _guide tab');
-      }
     } catch (err) {
       setGlossaryRows([]);
-      setGuideText('');
       setGlossaryStatus('加载失败: ' + err.message);
-      setGuideStatus('加载失败');
     }
   };
 
@@ -295,7 +272,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
     const batchSize = cfg.batchSize || 50;
     const bindingId = cfg.sheetSettings?.termLibraryBindingId || null;
     const localTerms = await getLocalTerms(bindingId);
-    const systemPrompt = buildSystemPrompt(glossaryRows, buildCombinedGuide(), localTerms, targetLang);
+    const systemPrompt = buildSystemPrompt(glossaryRows, localGuide, localTerms, targetLang);
 
     const start = parseInt(startRow, 10) || 2;
     const end = endRow ? parseInt(endRow, 10) : null;
@@ -449,7 +426,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
 
     const bindingId = cfg.sheetSettings?.termLibraryBindingId || null;
     const localTerms = await getLocalTerms(bindingId);
-    const systemPrompt = buildSystemPrompt(glossaryRows, buildCombinedGuide(), localTerms, targetLang);
+    const systemPrompt = buildSystemPrompt(glossaryRows, localGuide, localTerms, targetLang);
 
     setIsRunning(true);
     setIsPaused(false);
@@ -605,7 +582,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
     }
   };
 
-  const isLoaded = glossaryRows !== null && guideText !== null;
+  const isLoaded = glossaryRows !== null;
   const canStart = !isRunning && isLoaded;
 
   return (
@@ -618,10 +595,6 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
         <div className="ai-status-item">
           <span className="ai-status-label">术语库:</span>
           <span className="ai-status-value">{glossaryStatus}</span>
-        </div>
-        <div className="ai-status-item">
-          <span className="ai-status-label">翻译指导:</span>
-          <span className="ai-status-value">{guideStatus}</span>
         </div>
         <button className="ai-refresh-btn" onClick={loadGlossaryAndGuide} disabled={isRunning || syncing}>
           刷新
@@ -695,7 +668,7 @@ function AITranslationPanel({ token, sheet, sourceCol, targetCol, onTranslationD
             className="ai-guide-textarea"
             value={localGuide}
             onChange={e => handleLocalGuideChange(e.target.value)}
-            placeholder="把翻译指南 Word 文档上传到这里，或直接粘贴指南文本。会连同表格里的 _glossary / _guide 一起作为 AI 翻译的参考。"
+            placeholder="把翻译指南 Word 文档上传到这里，或直接粘贴指南文本。会连同术语库一起作为 AI 翻译的参考。"
             rows={4}
             disabled={isRunning || parsingGuide}
           />

@@ -21,19 +21,21 @@ function TermManager({ token }) {
     loadLibraries();
   }, []);
 
-  const loadTerms = async () => {
+  const loadTerms = async (libIdOverride) => {
+    // 下拉切换时 setState 还没生效，直接用传入的新值，避免读到旧的 selectedLibraryId
+    const libId = libIdOverride !== undefined ? libIdOverride : selectedLibraryId;
     const result = await chrome.storage.local.get(['terms', 'termLibraries']);
     const allTerms = result.terms || [];
     const libs = result.termLibraries || [];
     setLibraries(libs);
-    
+
     let filteredTerms = allTerms;
-    if (selectedLibraryId) {
-      const lib = libs.find(l => l.id === selectedLibraryId);
+    if (libId) {
+      const lib = libs.find(l => l.id === libId);
       if ((lib?.source === 'remote' || lib?.source === 'glossary') && lib?.terms) {
         filteredTerms = lib.terms;
       } else {
-        filteredTerms = allTerms.filter(t => t.libraryId === selectedLibraryId);
+        filteredTerms = allTerms.filter(t => t.libraryId === libId);
       }
     }
     setTerms(filteredTerms);
@@ -248,7 +250,7 @@ function TermManager({ token }) {
         <div className="lib-selector-row">
           <select 
             value={selectedLibraryId} 
-            onChange={(e) => { setSelectedLibraryId(e.target.value); loadTerms(); }}
+            onChange={(e) => { setSelectedLibraryId(e.target.value); loadTerms(e.target.value); }}
             className="lib-select"
           >
             <option value="">全部术语</option>
