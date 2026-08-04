@@ -17,13 +17,13 @@ const PRESETS = {
   deepseek: {
     label: 'DeepSeek',
     endpoint: 'https://api.deepseek.com/v1/chat/completions',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
     keyPlaceholder: 'sk-...',
   },
   gemini: {
     label: 'Gemini',
     endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.6-flash',
     keyPlaceholder: 'AIza...',
   },
   custom: {

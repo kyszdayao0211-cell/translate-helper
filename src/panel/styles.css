@@ -1558,6 +1558,25 @@
   background: #1b5e20;
 }
 
+.side-panel-ai-verify-btn {
+  background: #6a1b9a;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.side-panel-ai-verify-btn:hover {
+  background: #4a148c;
+}
+
+.side-panel-ai-verify-btn:disabled {
+  background: #b39ddb;
+  cursor: not-allowed;
+}
+
 .side-panel-close {
   background: none;
   border: none;
@@ -1595,17 +1614,12 @@
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px;
-  background: #fff3cd;
+  background: #f5f5f5;
   border-radius: 6px;
   font-size: 12px;
   cursor: pointer;
   transition: background 0.15s;
   border: 1px solid transparent;
-}
-
-.side-panel-item:hover {
-  background: #ffe082;
-  border-color: #ffb300;
 }
 
 .side-panel-item-main {
@@ -1615,40 +1629,106 @@
   flex-wrap: wrap;
 }
 
+.side-panel-tier-icon {
+  flex-shrink: 0;
+}
+
 .side-panel-row {
   font-weight: 600;
   color: #e65100;
   min-width: 45px;
 }
 
-.side-panel-source {
-  color: #1976d2;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.side-panel-arrow {
-  color: #999;
+.side-panel-label {
+  font-weight: 600;
+  color: #333;
   flex-shrink: 0;
 }
 
-.side-panel-expected {
-  color: #2e7d32;
-  max-width: 120px;
+.side-panel-detail {
+  color: #555;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 260px;
 }
 
-.side-panel-actual {
+.side-panel-confidence {
+  margin-left: auto;
+  color: #888;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* 🟥 漏译/截断：最高优先 */
+.side-panel-item-missing {
+  background: #ffcdd2;
+}
+.side-panel-item-missing:hover {
+  background: #ef9a9a;
+  border-color: #c62828;
+}
+
+/* 🔴 高置信术语不一致：直接改译文 */
+.side-panel-item-confirmed {
+  background: #fff3cd;
+}
+.side-panel-item-confirmed:hover {
+  background: #ffe082;
+  border-color: #ffb300;
+}
+
+/* 🔵 术语库疑似过时：聚合一条，做决策 */
+.side-panel-item-glossary_drift {
+  background: #e3f2fd;
+}
+.side-panel-item-glossary_drift:hover {
+  background: #bbdefb;
+  border-color: #1976d2;
+}
+
+/* 🟡 低置信：可能误报，人肉复核 */
+.side-panel-item-review {
+  background: #f0f0f0;
+}
+.side-panel-item-review:hover {
+  background: #e0e0e0;
+  border-color: #9e9e9e;
+}
+
+/* AI 复核结果：在原条目下附一行判定 + 理由，颜色按判定类型区分 */
+.side-panel-ai-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: #fff;
+  border: 1px dashed #ccc;
+}
+
+.side-panel-ai-verdict-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.side-panel-ai-verdict-reason,
+.side-panel-ai-verdict-suggestion {
+  color: #666;
+}
+
+.side-panel-ai-verdict-confirm .side-panel-ai-verdict-label {
   color: #c62828;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-decoration: line-through;
+}
+
+.side-panel-ai-verdict-false_positive .side-panel-ai-verdict-label {
+  color: #757575;
+}
+
+.side-panel-ai-verdict-update_glossary .side-panel-ai-verdict-label {
+  color: #1976d2;
 }
 
 .side-panel-dismiss-btn {

@@ -82,6 +82,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
+  if (request.type === 'AI_VERIFY_TERMS') {
+    verifyCheckItemsWithAI(request.apiKey, request.apiType, request.endpoint, request.model, request.systemPrompt, request.items)
+      .then(verdicts => sendResponse({ verdicts }))
+      .catch(err => sendResponse({ error: err.message }));
+    return true;
+  }
+
   if (request.type === 'READ_SHEET_TAB') {
     readSheetTab(request.spreadsheetId, request.tabName, request.token)
       .then(data => sendResponse({ data }))
@@ -104,9 +111,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-async function translateWithAI(apiKey, apiType, endpoint, model, systemPrompt, texts) {
-  const userMessage = `请翻译以下 ${texts.length} 行文本：\n${JSON.stringify(texts)}`;
-
+// 调 AI 接口并把回复解析成 JSON 数组；Anthropic / OpenAI 兼容格式通用。
+// translateWithAI（翻译）和 verifyCheckItemsWithAI（术语检查结果复核）共用这一段。
+async function callAIForJsonArray(apiKey, apiType, endpoint, model, systemPrompt, userMessage) {
   let headers, body;
 
   if (apiType === 'anthropic') {
@@ -159,6 +166,18 @@ async function translateWithAI(apiKey, apiType, endpoint, model, systemPrompt, t
   const match = raw.match(/\[[\s\S]*\]/);
   if (!match) throw new Error('返回内容无法解析为 JSON 数组');
   return JSON.parse(match[0]);
+}
+
+async function translateWithAI(apiKey, apiType, endpoint, model, systemPrompt, texts) {
+  const userMessage = `请翻译以下 ${texts.length} 行文本：\n${JSON.stringify(texts)}`;
+  return callAIForJsonArray(apiKey, apiType, endpoint, model, systemPrompt, userMessage);
+}
+
+// 把术语检查里置信度不高的条目（REVIEW/GLOSSARY_DRIFT）丢给 AI 复核，
+// 只带该条目本身的信息（源文/译文/术语库标准译法等），不读整表。
+async function verifyCheckItemsWithAI(apiKey, apiType, endpoint, model, systemPrompt, items) {
+  const userMessage = `请逐条判断以下 ${items.length} 条术语检查结果：\n${JSON.stringify(items)}`;
+  return callAIForJsonArray(apiKey, apiType, endpoint, model, systemPrompt, userMessage);
 }
 
 // ===== Google token 管理（service worker 内，无法 import ES 模块，故内联）=====

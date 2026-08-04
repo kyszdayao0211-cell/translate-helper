@@ -1,9 +1,46 @@
 import { useState, useEffect, useCallback, useRef, memo } from 'react';
 import toast from 'react-hot-toast';
 import { authedFetch, getFreshToken as getFreshTokenUtil } from '../utils/googleAuth';
+import {
+  buildMatchers, findTermsInSource, findMatchedTerms, analyzeConsistency,
+  detectMissingTranslations, buildTieredReport, reportItemKey,
+} from './utils/termMatcher';
 
 // 疑问标记在原表目标列使用的背景色（淡紫色，和常见的黄/绿/红区分开，方便按颜色筛选）
 const QUESTION_FLAG_COLOR = { red: 0.81, green: 0.71, blue: 0.90 };
+
+// 术语缺失率达到这个比例，判定为「术语库过时」而非逐行错误，聚合成一条提示
+const DRIFT_THRESHOLD = 0.6;
+
+// 漏译/截断检测参数：默认针对英→韩，中→韩等字符比接近 1:1 的语向需调高 RATIO_FLOOR
+const MIN_SOURCE_LEN = 40; // 源文可翻译长度低于这个门槛，不做比例判定（避免误伤短术语行）
+const RATIO_FLOOR = 0.15;  // 译/源 可翻译长度比下限，低于此值判定为疑似漏译/截断
+
+// 术语不一致的置信度低于这个值，从「直接改译文」降级为「疑似，需人肉复核」
+const REVIEW_BELOW = 0.6;
+
+// AI 复核只处理低置信度的 REVIEW/GLOSSARY_DRIFT 条目，一次最多送这么多条（控制 prompt 大小和成本）
+const MAX_AI_VERIFY_ITEMS = 60;
+// 术语库过时聚合条目附带的实际译法样例最多带几条，让 AI 有点上下文又不至于把整批未命中行都塞进去
+const DRIFT_EXAMPLE_ROWS = 5;
+
+// AI 复核系统提示：只对算法自己不确定的两档（REVIEW 逐行疑似 / GLOSSARY_DRIFT 术语库疑似过时）做语义判断，
+// 高置信度的 CONFIRMED/MISSING 不送审，避免重复劳动。
+const AI_VERIFY_SYSTEM_PROMPT = `你是资深游戏本地化审校，正在复核一个术语一致性检查工具生成的疑似问题列表。
+
+每条数据带一个 tier 字段：
+- "REVIEW"：某一行源文命中了术语库里的术语，但译文里没有直接包含标准译法字符串，工具不确定这是不是真的错误。请结合 source（源文）、expected（术语库标准译法）、actual（该行实际译文）判断：如果 actual 在语境下其实翻译得没问题（比如同义替换、语法变形、这里根本不该套用该术语），判定 "FALSE_POSITIVE"；如果确实是术语用错了，判定 "CONFIRM"。
+- "GLOSSARY_DRIFT"：某个术语在全表大多数命中的行里，译者都没有使用术语库里的标准译法（examples 是若干未使用标准译法的实际样例）。请判断：如果这些行的译法本身更合理、更统一，只是术语库没跟上，判定 "UPDATE_GLOSSARY" 并在 suggestedTarget 给出建议的新标准译法；如果术语库译法才是对的、这些行确实译错了，判定 "CONFIRM"。
+
+请对输入数组里的每一条给出一个判断，严格按输入顺序一一对应，以 JSON 数组格式返回，每项格式：
+{"verdict": "CONFIRM" | "FALSE_POSITIVE" | "UPDATE_GLOSSARY", "reason": "一句话理由", "suggestedTarget": "仅 verdict 为 UPDATE_GLOSSARY 时填写，其余留空字符串"}
+只返回 JSON 数组本身，不要添加任何解释、编号或 markdown 代码块标记。`;
+
+const AI_VERDICT_LABEL = {
+  CONFIRM: '✅ AI: 确认原判定',
+  FALSE_POSITIVE: '💤 AI: 误报，可忽略',
+  UPDATE_GLOSSARY: '🔧 AI: 建议改术语库',
+};
 
 function autoResizeTextarea(textarea) {
   if (!textarea) return;
@@ -16,7 +53,7 @@ function autoResizeTextarea(textarea) {
 const TableRow = memo(function TableRow({
   row, i, isVisible, isSelectedCell, isMultiSelected,
   columnWidths, showIntermediate, showTermsCol,
-  onCellSelect, onUpdateCell, onTextareaRef, onTargetBlur,
+  onCellSelect, onUpdateCell, onTextareaRef,
   onRowMouseDown, onRowMouseMove, onClearRowInconsistency,
   isFlagged, flagNote, onToggleFlag, onFlagNote,
 }) {
@@ -72,7 +109,6 @@ const TableRow = memo(function TableRow({
             autoResizeTextarea(e.target);
           }}
           onFocus={(e) => onCellSelect(i, 'target', row.target, e)}
-          onBlur={() => onTargetBlur(row.source)}
           placeholder="目标语言..."
         />
         {row.marked && <span className="term-badge">术语</span>}
@@ -149,7 +185,6 @@ function TranslationWorkspace({
   const [selectedCell, setSelectedCell] = useState(null);
   const [terms, setTerms] = useState([]);
   const [markingMode, setMarkingMode] = useState(null);
-  const [tooltip, setTooltip] = useState({ visible: false, x: 0, y: 0, terms: [] });
   const [columnWidths, setColumnWidths] = useState({ source: 300, intermediate: 300, target: 300, terms: 250 });
   const [pageSize, setPageSize] = useState(200);
   const [currentPage, setCurrentPage] = useState(1);
@@ -160,6 +195,7 @@ function TranslationWorkspace({
   const [rangeEnd, setRangeEnd] = useState(200);
   const [autoCheckTerms, setAutoCheckTerms] = useState(false);
   const [sidePanel, setSidePanel] = useState({ visible: false, data: [] });
+  const [aiVerifying, setAiVerifying] = useState(false);
   const [highlightRow, setHighlightRow] = useState(null);
   const [dismissedInconsistencies, setDismissedInconsistencies] = useState([]);
   // 疑问标记：{ [表格行号]: { note } }，标记时同步给原表目标列标色+批注
@@ -168,7 +204,6 @@ function TranslationWorkspace({
   const workspaceRef = useRef(null);
   const resizingRef = useRef(null);
   const columnWidthsRef = useRef(columnWidths);
-  const tooltipRef = useRef(null);
   const textareaRefs = useRef({});
   const termsRef = useRef([]);
   const saveTimerRef = useRef(null);
@@ -421,16 +456,10 @@ useEffect(() => {
       return;
     }
     
+    const matchers = buildMatchers(currentTerms);
     const highlightMatches = rows.map(row => {
       if (!row.source) return { ...row, highlighted: false, matchedTerms: [] };
-      const matchedTerms = currentTerms.filter(t => {
-        if (!t.source) return false;
-        if (t.caseSensitive) {
-          return row.source.includes(t.source);
-        } else {
-          return row.source.toLowerCase().includes(t.source.toLowerCase());
-        }
-      });
+      const matchedTerms = findMatchedTerms(row.source, matchers);
       return {
         ...row,
         highlighted: matchedTerms.length > 0,
@@ -544,11 +573,14 @@ useEffect(() => {
       if (!useRange && values.length > 0) {
         try {
           const metaResponse = await authedFetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}?fields=sheets.properties.gridProperties.rowCount`
+            `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}?fields=sheets(properties(title,gridProperties.rowCount))`
           );
           if (metaResponse.ok) {
             const metaData = await metaResponse.json();
-            const totalRowsFromMeta = metaData.sheets?.[0]?.properties?.gridProperties?.rowCount || 0;
+            const sheetsArr = metaData.sheets || [];
+            // 按当前工作表标题匹配对应 tab，取不到再退回第一个，避免读成别的 tab 的行数
+            const matched = sheetsArr.find(s => s.properties?.title === sheetTitle) || sheetsArr[0];
+            const totalRowsFromMeta = matched?.properties?.gridProperties?.rowCount || 0;
             if (totalRowsFromMeta > 0) {
               setTotalRows(totalRowsFromMeta);
             }
@@ -563,17 +595,10 @@ useEffect(() => {
       const markedResult = await chrome.storage.local.get(['markedTerms']);
       const markedTerms = markedResult.markedTerms || [];
       
+      const sheetMatchers = buildMatchers(termsRef.current);
       const findMatchingTerms = (text) => {
-        const currentTerms = termsRef.current;
-        if (!text || !currentTerms.length) return [];
-        return currentTerms.filter(t => {
-          if (!t.source) return false;
-          if (t.caseSensitive) {
-            return text.includes(t.source);
-          } else {
-            return text.toLowerCase().includes(t.source.toLowerCase());
-          }
-        });
+        if (!text || !sheetMatchers.length) return [];
+        return findMatchedTerms(text, sheetMatchers);
       };
 
       const pendingEdits = await loadPendingEdits();
@@ -624,8 +649,10 @@ useEffect(() => {
       if (forceRange || useRange) {
         setTotalRows(endRow);
       } else {
-        const rowCount = values.length > 0 ? startRow + values.length - 1 : totalRows;
-        setTotalRows(Math.max(rowCount, totalRows));
+        // 用函数式更新，基于最新的 totalRows（meta 可能刚设成更大的真实值），
+        // 避免用过期闭包值把正确的总行数缩回去
+        const rowCount = values.length > 0 ? startRow + values.length - 1 : 0;
+        setTotalRows(prev => Math.max(rowCount, prev));
       }
       
     } catch (err) {
@@ -697,38 +724,28 @@ useEffect(() => {
       const allValues = data.values || [];
       const colIndexMap = getColumnIndexMap();
       
-      const inconsistentRows = [];
-      allValues.forEach((row, index) => {
-        const sourceText = row[colIndexMap.source]?.trim();
-        const targetText = row[colIndexMap.target]?.trim();
-        
-        if (!sourceText) return;
-        
-        const matchedTerm = currentTerms.find(t => 
-          t.source && sourceText.includes(t.source)
-        );
-        if (matchedTerm && targetText && !targetText.includes(matchedTerm.target)) {
-          inconsistentRows.push({ row: index + 1, source: sourceText, expected: matchedTerm.target, actual: targetText });
-        }
-      });
-      
+      const checkMatchers = buildMatchers(currentTerms);
+      const sourceRows = allValues.map((row, index) => ({
+        rowNo: index + 1,
+        source: row[colIndexMap.source]?.trim(),
+        target: row[colIndexMap.target]?.trim(),
+      }));
+
+      const { glossaryDrift, likelyErrors } = analyzeConsistency(sourceRows, checkMatchers, { driftThreshold: DRIFT_THRESHOLD });
+      const missingFindings = detectMissingTranslations(sourceRows, { minSourceLen: MIN_SOURCE_LEN, ratioFloor: RATIO_FLOOR });
+      const tieredReport = buildTieredReport({ glossaryDrift, likelyErrors }, missingFindings, { reviewBelow: REVIEW_BELOW });
+
       toast.dismiss('checkAll');
-      
+
       const dismissed = dismissedInconsistencies;
-      const filteredRows = inconsistentRows.filter(item => 
-        !dismissed.some(d => 
-          d.row === item.row && 
-          d.source === item.source && 
-          d.expected === item.expected
-        )
-      );
-      
-      if (filteredRows.length > 0) {
-        openSidePanel(filteredRows);
-      } else if (inconsistentRows.length > 0) {
-        toast.success('全表检查完成，所有不一致已忽略');
+      const filteredItems = tieredReport.filter(item => !dismissed.some(d => d.key === reportItemKey(item)));
+
+      if (filteredItems.length > 0) {
+        openSidePanel(filteredItems);
+      } else if (tieredReport.length > 0) {
+        toast.success('全表检查完成，所有提示已忽略');
       } else {
-        toast.success('全表检查完成，未发现不一致');
+        toast.success('全表检查完成，未发现问题');
       }
     } catch (err) {
       toast.dismiss('checkAll');
@@ -753,8 +770,14 @@ useEffect(() => {
       return;
     }
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const header = ['行号', '源文本', '术语库标准译法', '当前实际译法'];
-    const body = rows.map(item => [item.row, item.source, item.expected, item.actual].map(esc).join(','));
+    const tierLabel = { MISSING: '漏译/截断', CONFIRMED: '术语不一致', GLOSSARY_DRIFT: '术语库疑似过时', REVIEW: '疑似不一致(待复核)' };
+    const header = ['档位', '行号', '置信度', '说明'];
+    const body = rows.map(item => [
+      tierLabel[item.tier] || item.tier,
+      item.rowNo ?? '',
+      item.confidence,
+      item.detail,
+    ].map(esc).join(','));
     const csv = '﻿' + [header.map(esc).join(','), ...body].join('\r\n');
 
     const sheetTitle = selectedSheetTitle || sheet?.title || '表格';
@@ -762,12 +785,111 @@ useEffect(() => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `术语不一致_${sheetTitle}_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `检查结果_${sheetTitle}_${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    toast.success(`已导出 ${rows.length} 处待确认的不一致`);
+    toast.success(`已导出 ${rows.length} 条待确认的提示`);
+  };
+
+  // 只把置信度低、算法自己拿不准的 REVIEW/GLOSSARY_DRIFT 条目喂给 AI 做语义复核，
+  // 不读整张表；每条只带该条目本身需要的字段（源文/术语库标准译法/实际译文等）。
+  const handleAiVerify = async () => {
+    const candidates = sidePanel.data.filter(item => item.tier === 'REVIEW' || item.tier === 'GLOSSARY_DRIFT');
+    if (candidates.length === 0) {
+      toast('没有需要 AI 复核的条目（仅 🟡 疑似不一致 / 🔵 术语库疑似过时 会送去复核）', { icon: 'ℹ️' });
+      return;
+    }
+
+    const targets = candidates.slice(0, MAX_AI_VERIFY_ITEMS);
+    if (candidates.length > MAX_AI_VERIFY_ITEMS) {
+      toast(`待复核条目较多，本次先处理前 ${MAX_AI_VERIFY_ITEMS} 条`, { icon: '⚠️' });
+    }
+
+    const cfg = await chrome.storage.local.get(['aiApiKey', 'aiApiType', 'aiEndpoint', 'aiModel']);
+    if (!cfg.aiApiKey || !cfg.aiEndpoint) {
+      toast.error('请先在设置页配置 AI API Key 和端点');
+      return;
+    }
+
+    const payload = targets.map(item => item.tier === 'GLOSSARY_DRIFT'
+      ? {
+          tier: item.tier,
+          source: item.source,
+          expected: item.expected,
+          hitCount: item.hitCount,
+          missCount: item.missCount,
+          examples: (item.missRows || []).slice(0, DRIFT_EXAMPLE_ROWS).map(r => ({ row: r.rowNo, actual: r.actual })),
+        }
+      : {
+          tier: item.tier,
+          row: item.rowNo,
+          source: item.source,
+          expected: item.expected,
+          actual: item.actual,
+        }
+    );
+
+    setAiVerifying(true);
+    toast.loading('AI 复核中...', { id: 'aiVerify' });
+    try {
+      const resp = await new Promise(resolve => {
+        const timer = setTimeout(() => resolve({ error: '请求超时' }), 120000);
+        chrome.runtime.sendMessage({
+          type: 'AI_VERIFY_TERMS',
+          apiKey: cfg.aiApiKey,
+          apiType: cfg.aiApiType || 'anthropic',
+          endpoint: cfg.aiEndpoint,
+          model: cfg.aiModel,
+          systemPrompt: AI_VERIFY_SYSTEM_PROMPT,
+          items: payload,
+        }, (r) => {
+          clearTimeout(timer);
+          if (r) return resolve(r);
+          // 回调收到 undefined = 端口在没有回复的情况下关闭了。最常见的原因是
+          // 构建后只重开了面板、没有重新加载扩展，后台仍是不认识本消息的旧脚本。
+          const reason = chrome.runtime.lastError?.message;
+          resolve({ error: reason
+            ? `扩展后台未响应（${reason}）。请到 chrome://extensions 重新加载本扩展后重试`
+            : '无响应' });
+        });
+      });
+
+      toast.dismiss('aiVerify');
+
+      if (resp?.error) {
+        toast.error('AI 复核失败: ' + resp.error);
+        return;
+      }
+
+      const verdicts = resp?.verdicts || [];
+      // 判定靠下标与送审条目一一对应，数量不符说明模型漏答/多答，
+      // 此时整批都不可信（会把判定挂到错的行上），宁可全丢弃让用户重试。
+      if (verdicts.length !== targets.length) {
+        toast.error(`AI 返回 ${verdicts.length} 条判定，与送审的 ${targets.length} 条不符，已丢弃本次结果，请重试`);
+        return;
+      }
+
+      const verdictMap = new Map();
+      targets.forEach((item, i) => {
+        if (verdicts[i]) verdictMap.set(reportItemKey(item), verdicts[i]);
+      });
+
+      setSidePanel(prev => ({
+        ...prev,
+        data: prev.data.map(item => {
+          const v = verdictMap.get(reportItemKey(item));
+          return v ? { ...item, aiVerdict: v } : item;
+        }),
+      }));
+      toast.success(`AI 复核完成，共 ${verdicts.length} 条`);
+    } catch (err) {
+      toast.dismiss('aiVerify');
+      toast.error('AI 复核出错: ' + err.message);
+    } finally {
+      setAiVerifying(false);
+    }
   };
 
   // 取当前工作表的数字 sheetId（gid），批注/标色的 API 需要它
@@ -860,40 +982,34 @@ useEffect(() => {
   };
 
   const handleDismissInconsistency = (item) => {
-    const entry = {
-      row: item.row,
-      source: item.source,
-      expected: item.expected,
-      actual: item.actual,
-      dismissedAt: new Date().toISOString()
-    };
+    const key = reportItemKey(item);
     // 乐观更新：先用内存里的 state 立即更新界面，存储在后台异步写入，
     // 不再每次点击都串行 await 一次 storage 读+写（数据越多越慢）。
     setDismissedInconsistencies(prev => {
-      const next = [...prev, entry];
+      const next = [...prev, { key, dismissedAt: new Date().toISOString() }];
       if (sheet?.id) {
         chrome.storage.local.set({ ['dismissedInconsistencies_' + sheet.id]: next });
       }
       return next;
     });
-    const remaining = sidePanel.data.filter(d =>
-      !(d.row === item.row && d.source === item.source && d.expected === item.expected)
-    );
+    const remaining = sidePanel.data.filter(d => reportItemKey(d) !== key);
     if (remaining.length === 0) {
       setSidePanel({ visible: false, data: [] });
-      toast.success('所有不一致已处理完毕');
+      toast.success('所有提示已处理完毕');
     } else {
       setSidePanel({ visible: true, data: remaining });
     }
   };
 
   const handleSidePanelRowClick = (item) => {
-    const targetPage = Math.ceil(item.row / pageSize);
-    setHighlightRow(item.row);
+    const rowNo = item.rowNo ?? item.missRows?.[0]?.rowNo;
+    if (!rowNo) return;
+    const targetPage = Math.ceil(rowNo / pageSize);
+    setHighlightRow(rowNo);
     if (targetPage !== currentPage) {
       setCurrentPage(targetPage);
     } else {
-      scrollToRow(item.row);
+      scrollToRow(rowNo);
     }
   };
 
@@ -976,29 +1092,14 @@ useEffect(() => {
     }
   };
 
-  const findTermsInText = (text) => {
-    if (!text) return [];
-    return terms.filter(t => {
-      if (!t.source) return false;
-      if (t.caseSensitive) {
-        return text.includes(t.source);
-      } else {
-        return text.toLowerCase().includes(t.source.toLowerCase());
-      }
-    });
-  };
-
   const recalcMatchedTerms = useCallback(async () => {
     const currentTerms = termsRef.current;
+    const recalcMatchers = buildMatchers(currentTerms);
     const result = await chrome.storage.local.get(['markedTerms']);
     const markedTerms = result.markedTerms || [];
     setRows(prevRows => prevRows.map(row => {
       if (!row.source) return row;
-      const matched = currentTerms.filter(t => {
-        if (!t.source) return false;
-        if (t.caseSensitive) return row.source.includes(t.source);
-        return row.source.toLowerCase().includes(t.source.toLowerCase());
-      });
+      const matched = findMatchedTerms(row.source, recalcMatchers);
       return {
         ...row,
         highlighted: matched.length > 0,
@@ -1204,6 +1305,9 @@ useEffect(() => {
       return;
     }
     if (selectedRows.size === 0) return;
+    // 正在单元格文本框里编辑时，放行浏览器原生的复制/粘贴，不触发批量操作
+    const tag = e.target?.tagName;
+    if (tag === 'TEXTAREA' || tag === 'INPUT') return;
     if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault();
       e.stopPropagation();
@@ -1297,20 +1401,6 @@ useEffect(() => {
     if (col === 'source') {
       workspaceRef.current?.focus();
     }
-
-    if (col === 'source' && text) {
-      const currentTerms = termsRef.current;
-      const matchedTerms = currentTerms.filter(t => {
-        if (!t.source) return false;
-        return t.caseSensitive ? text.includes(t.source) : text.toLowerCase().includes(t.source.toLowerCase());
-      });
-      if (matchedTerms.length > 0) {
-        const rect = event?.currentTarget?.getBoundingClientRect();
-        if (rect) {
-          showTermTooltip(matchedTerms, rect);
-        }
-      }
-    }
   }, []);
 
   const handleTextSelect = (e) => {
@@ -1318,13 +1408,7 @@ useEffect(() => {
     const selection = window.getSelection();
     const text = selection.toString().trim();
     if (!text || !selectedCell) return;
-    
-    const matchedTerms = findTermsInText(text);
-    if (matchedTerms.length > 0) {
-      const rect = selection.getRangeAt(0).getBoundingClientRect();
-      showTermTooltip(matchedTerms, rect);
-    }
-    
+
     if (selectedCell.col === 'source') {
       if (selection.rangeCount > 0) {
         const rect = selection.getRangeAt(0).getBoundingClientRect();
@@ -1352,19 +1436,6 @@ useEffect(() => {
       setMarkingMode(null);
       toast.success('术语标记成功');
     }
-  };
-
-  const showTermTooltip = (matchedTerms, rect) => {
-    setTooltip({
-      visible: true,
-      x: rect.left + rect.width / 2,
-      y: rect.top - 10,
-      terms: matchedTerms
-    });
-  };
-
-  const closeTooltip = () => {
-    setTooltip({ visible: false, x: 0, y: 0, terms: [] });
   };
 
   const handleFloatMarkClick = () => {
@@ -1466,18 +1537,6 @@ useEffect(() => {
       toast.warning(`保存完成：${success} 成功，${fail} 失败。请重连后重新保存`);
     }
   };
-
-  const handleTargetBlur = useCallback((sourceText) => {
-    if (!sourceText) return;
-    const currentTerms = termsRef.current;
-    const matched = currentTerms.find(t => {
-      if (!t.source) return false;
-      return t.caseSensitive ? sourceText.includes(t.source) : sourceText.toLowerCase().includes(t.source.toLowerCase());
-    });
-    if (matched) {
-      toast(`参考翻译: ${matched.target} (出现 ${matched.count} 次)`, { icon: '💡' });
-    }
-  }, []);
 
   const handleResizeStart = (e, column) => {
     e.preventDefault();
@@ -1742,7 +1801,6 @@ useEffect(() => {
               onCellSelect={handleCellSelect}
               onUpdateCell={updateCell}
               onTextareaRef={textareaRefCallback}
-              onTargetBlur={handleTargetBlur}
               onRowMouseDown={handleRowMouseDown}
               onRowMouseMove={handleRowMouseMove}
               onClearRowInconsistency={clearRowInconsistency}
@@ -1781,12 +1839,20 @@ useEffect(() => {
       {sidePanel.visible && (
         <div className="inconsistency-side-panel">
           <div className="side-panel-header">
-            <h3>术语不一致列表</h3>
+            <h3>检查结果</h3>
             <div className="side-panel-header-actions">
+              <button
+                className="side-panel-ai-verify-btn"
+                onClick={handleAiVerify}
+                disabled={aiVerifying}
+                title="只把 🟡 疑似不一致 / 🔵 术语库疑似过时 这两档送 AI 做语义复核，不读整表"
+              >
+                {aiVerifying ? 'AI 复核中...' : 'AI 复核'}
+              </button>
               <button
                 className="side-panel-export-btn"
                 onClick={handleExportInconsistencies}
-                title="把当前列表（已排除「不再提醒」的）导出为 CSV，方便逐条确认术语"
+                title="把当前列表（已排除「不再提醒」的）导出为 CSV，方便逐条确认"
               >
                 导出 CSV
               </button>
@@ -1794,21 +1860,38 @@ useEffect(() => {
             </div>
           </div>
           <div className="side-panel-body">
-            <p className="side-panel-summary">共 {sidePanel.data.length} 处不一致</p>
+            <p className="side-panel-summary">
+              共 {sidePanel.data.length} 条提示
+              （🟥 {sidePanel.data.filter(d => d.tier === 'MISSING').length}
+              {' '}🔴 {sidePanel.data.filter(d => d.tier === 'CONFIRMED').length}
+              {' '}🔵 {sidePanel.data.filter(d => d.tier === 'GLOSSARY_DRIFT').length}
+              {' '}🟡 {sidePanel.data.filter(d => d.tier === 'REVIEW').length}）
+            </p>
             <div className="side-panel-list">
               {sidePanel.data.slice(0, 200).map((item, i) => (
-                <div key={i} className="side-panel-item" onClick={() => handleSidePanelRowClick(item)}>
+                <div key={i} className={`side-panel-item side-panel-item-${item.tier.toLowerCase()}`} onClick={() => handleSidePanelRowClick(item)}>
                   <div className="side-panel-item-main">
-                    <span className="side-panel-row">行 {item.row}</span>
-                    <span className="side-panel-source">{item.source}</span>
-                    <span className="side-panel-arrow">→</span>
-                    <span className="side-panel-expected">标准: {item.expected}</span>
-                    <span className="side-panel-actual">实际: {item.actual}</span>
+                    <span className="side-panel-tier-icon">{item.icon}</span>
+                    {item.rowNo != null && <span className="side-panel-row">行 {item.rowNo}</span>}
+                    <span className="side-panel-label">{item.label}</span>
+                    <span className="side-panel-detail">{item.detail}</span>
+                    <span className="side-panel-confidence">置信度 {Math.round(item.confidence * 100)}%</span>
                   </div>
-                  <button 
-                    className="side-panel-dismiss-btn" 
+                  {item.aiVerdict && (
+                    <div className={`side-panel-ai-verdict side-panel-ai-verdict-${item.aiVerdict.verdict?.toLowerCase()}`}>
+                      <span className="side-panel-ai-verdict-label">
+                        {AI_VERDICT_LABEL[item.aiVerdict.verdict] || `AI: ${item.aiVerdict.verdict}`}
+                      </span>
+                      {item.aiVerdict.reason && <span className="side-panel-ai-verdict-reason">{item.aiVerdict.reason}</span>}
+                      {item.aiVerdict.verdict === 'UPDATE_GLOSSARY' && item.aiVerdict.suggestedTarget && (
+                        <span className="side-panel-ai-verdict-suggestion">建议新译法: {item.aiVerdict.suggestedTarget}</span>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    className="side-panel-dismiss-btn"
                     onClick={(e) => { e.stopPropagation(); handleDismissInconsistency(item); }}
-                    title="不再对此项提示不一致"
+                    title="不再对此项提示"
                   >
                     不再提醒
                   </button>
@@ -1822,30 +1905,6 @@ useEffect(() => {
         </div>
       )}
 
-      {tooltip.visible && tooltip.terms && tooltip.terms.length > 0 && (
-        <div 
-          className="term-tooltip"
-          ref={tooltipRef}
-          style={{
-            left: `${tooltip.x}px`,
-            top: `${tooltip.y}px`,
-            transform: 'translate(-50%, -100%)'
-          }}
-        >
-          <div className="term-tooltip-header">
-            <span className="term-tooltip-title">术语提醒</span>
-            <button className="term-tooltip-close" onClick={closeTooltip}>×</button>
-          </div>
-          {tooltip.terms.map((term, i) => (
-            <div key={i} className="term-tooltip-item">
-              <div className="term-tooltip-source">{term.source}</div>
-              <div className="term-tooltip-arrow">→</div>
-              <div className="term-tooltip-target">{term.target}</div>
-              {term.count > 1 && <span className="term-tooltip-count">×{term.count}</span>}
-            </div>
-          ))}
-        </div>
-      )}
 
       {floatMark.visible && (
         <div 
