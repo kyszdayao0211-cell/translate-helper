@@ -8,6 +8,16 @@ import {
 
 // 疑问标记在原表目标列使用的背景色（淡紫色，和常见的黄/绿/红区分开，方便按颜色筛选）
 const QUESTION_FLAG_COLOR = { red: 0.81, green: 0.71, blue: 0.90 };
+// 修改标记在原表目标列使用的背景色（淡黄 #FFE599）
+const MODIFIED_MARK_COLOR = { red: 1, green: 0.898, blue: 0.6 };
+// 清除标记时写回的白色
+const CLEAR_MARK_COLOR = { red: 1, green: 1, blue: 1 };
+// 判断原表读回的背景色是否近似等于某个标记色（浮点+取整会有微小误差，留容差）
+const colorApprox = (c, t) =>
+  !!c &&
+  Math.abs((c.red ?? 0) - t.red) < 0.05 &&
+  Math.abs((c.green ?? 0) - t.green) < 0.05 &&
+  Math.abs((c.blue ?? 0) - t.blue) < 0.05;
 
 // 术语缺失率达到这个比例，判定为「术语库过时」而非逐行错误，聚合成一条提示
 const DRIFT_THRESHOLD = 0.6;
@@ -23,6 +33,15 @@ const REVIEW_BELOW = 0.6;
 const MAX_AI_VERIFY_ITEMS = 60;
 // 术语库过时聚合条目附带的实际译法样例最多带几条，让 AI 有点上下文又不至于把整批未命中行都塞进去
 const DRIFT_EXAMPLE_ROWS = 5;
+
+// 检查结果的 tier 归到三种颜色，供侧边栏按颜色过滤：
+// 红 = 漏译/截断(MISSING) + 术语不一致(CONFIRMED)；黄 = 疑似待复核(REVIEW)；蓝 = 术语库疑似过时(GLOSSARY_DRIFT)
+const TIER_COLOR = {
+  MISSING: 'red',
+  CONFIRMED: 'red',
+  REVIEW: 'yellow',
+  GLOSSARY_DRIFT: 'blue',
+};
 
 // AI 复核系统提示：只对算法自己不确定的两档（REVIEW 逐行疑似 / GLOSSARY_DRIFT 术语库疑似过时）做语义判断，
 // 高置信度的 CONFIRMED/MISSING 不送审，避免重复劳动。
@@ -56,6 +75,7 @@ const TableRow = memo(function TableRow({
   onCellSelect, onUpdateCell, onTextareaRef,
   onRowMouseDown, onRowMouseMove, onClearRowInconsistency,
   isFlagged, flagNote, onToggleFlag, onFlagNote,
+  isModified, onToggleModified,
 }) {
   return (
     <div
@@ -123,6 +143,11 @@ const TableRow = memo(function TableRow({
             ? `疑问：${flagNote || '(无备注)'}\n左键取消标记 · 右键编辑备注`
             : '左键标记疑问（标色）· 右键标记并加备注'}
         >🚩{isFlagged && flagNote ? <span className="row-flag-note-dot">📝</span> : null}</button>
+        <button
+          className={`row-modified-btn ${isModified ? 'modified' : ''}`}
+          onClick={(e) => { e.stopPropagation(); onToggleModified(i); }}
+          title={isModified ? '已标记修改（染黄）· 点击取消' : '标记为已修改（染黄）'}
+        >✏️</button>
       </div>
       {showTermsCol && (
         <div
@@ -188,6 +213,7 @@ function TranslationWorkspace({
   const [columnWidths, setColumnWidths] = useState({ source: 300, intermediate: 300, target: 300, terms: 250 });
   const [pageSize, setPageSize] = useState(200);
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageInput, setPageInput] = useState('');
   const [totalRows, setTotalRows] = useState(1000);
   const [loadingData, setLoadingData] = useState(false);
   const [useRange, setUseRange] = useState(false);
@@ -195,11 +221,15 @@ function TranslationWorkspace({
   const [rangeEnd, setRangeEnd] = useState(200);
   const [autoCheckTerms, setAutoCheckTerms] = useState(false);
   const [sidePanel, setSidePanel] = useState({ visible: false, data: [] });
+  const [tierFilter, setTierFilter] = useState('all'); // 检查结果按颜色过滤：all | red | yellow | blue
+  const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false); // 面板暂时收起成贴边细条（不关闭、保留结果）
   const [aiVerifying, setAiVerifying] = useState(false);
   const [highlightRow, setHighlightRow] = useState(null);
   const [dismissedInconsistencies, setDismissedInconsistencies] = useState([]);
   // 疑问标记：{ [表格行号]: { note } }，标记时同步给原表目标列标色+批注
   const [flaggedMap, setFlaggedMap] = useState({});
+  // 修改标记：{ [表格行号]: true }，标记时给原表目标列染黄；和疑问标记互斥
+  const [modifiedMap, setModifiedMap] = useState({});
   const hasCheckedRef = useRef(false);
   const workspaceRef = useRef(null);
   const resizingRef = useRef(null);
@@ -243,12 +273,16 @@ function TranslationWorkspace({
   // 疑问标记按 表格ID + 工作表标题 分开存储（不同 tab 行号会重复，必须区分）
   const flagStorageKey = () =>
     `questionFlags_${sheet?.id}__${selectedSheetTitle || sheet?.title || ''}`;
+  const modifiedStorageKey = () =>
+    `modifiedMarks_${sheet?.id}__${selectedSheetTitle || sheet?.title || ''}`;
 
   useEffect(() => {
-    if (!sheet?.id) { setFlaggedMap({}); return; }
-    const key = flagStorageKey();
-    chrome.storage.local.get([key], (result) => {
-      setFlaggedMap(result[key] || {});
+    if (!sheet?.id) { setFlaggedMap({}); setModifiedMap({}); return; }
+    const fKey = flagStorageKey();
+    const mKey = modifiedStorageKey();
+    chrome.storage.local.get([fKey, mKey], (result) => {
+      setFlaggedMap(result[fKey] || {});
+      setModifiedMap(result[mKey] || {});
     });
   }, [sheet?.id, selectedSheetTitle]);
 
@@ -527,6 +561,50 @@ useEffect(() => {
     };
   };
 
+  // 对账：读原表目标列的背景色，若某行的颜色已被去掉（或换成别的色），
+  // 就把本地对应的角标同步清除。仅在该范围内有标记时才发起请求。
+  const reconcileMarks = async (startRow, endRow) => {
+    if (!sheet?.id) return;
+    const fKey = flagStorageKey();
+    const mKey = modifiedStorageKey();
+    const stored = await chrome.storage.local.get([fKey, mKey]);
+    const fMap = { ...(stored[fKey] || {}) };
+    const mMap = { ...(stored[mKey] || {}) };
+    if (Object.keys(fMap).length === 0 && Object.keys(mMap).length === 0) return;
+    try {
+      const title = selectedSheetTitle || sheet?.title || '';
+      const range = title
+        ? `${title}!${targetCol}${startRow}:${targetCol}${endRow}`
+        : `${targetCol}${startRow}:${targetCol}${endRow}`;
+      const res = await authedFetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheet.id}?includeGridData=true&ranges=${encodeURIComponent(range)}&fields=sheets(data(startRow,rowData(values(userEnteredFormat(backgroundColor)))))`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const grid = data.sheets?.[0]?.data?.[0];
+      if (!grid) return;
+      const dataStart = grid.startRow || 0; // 0 基
+      const rowData = grid.rowData || [];
+      const colorAt = {};
+      rowData.forEach((rd, idx) => {
+        colorAt[dataStart + idx + 1] = rd?.values?.[0]?.userEnteredFormat?.backgroundColor || null;
+      });
+      let changed = false;
+      for (let r = startRow; r <= endRow; r++) {
+        const c = colorAt[r] || null; // 范围内没读到 = 无填充 = 已清色
+        if (fMap[r] && !colorApprox(c, QUESTION_FLAG_COLOR)) { delete fMap[r]; changed = true; }
+        if (mMap[r] && !colorApprox(c, MODIFIED_MARK_COLOR)) { delete mMap[r]; changed = true; }
+      }
+      if (changed) {
+        chrome.storage.local.set({ [fKey]: fMap, [mKey]: mMap });
+        setFlaggedMap(fMap);
+        setModifiedMap(mMap);
+      }
+    } catch (e) {
+      console.error('对账标记颜色失败', e);
+    }
+  };
+
   const loadSheetData = async (forceRange = null, keepOnlyRows = null) => {
     try {
       setLoadingData(true);
@@ -646,6 +724,9 @@ useEffect(() => {
       setRows(finalRows);
       setResizeNonce(n => n + 1);
 
+      // 后台对账：原表颜色若被去掉，同步清掉本地角标（不阻塞加载）
+      reconcileMarks(startRow, endRow);
+
       if (forceRange || useRange) {
         setTotalRows(endRow);
       } else {
@@ -673,6 +754,18 @@ useEffect(() => {
       }
       setCurrentPage(page);
     }
+  };
+
+  // 输入页码跳转：回车或失焦时生效，越界自动夹到 [1, totalPages]
+  const handlePageJump = (e) => {
+    if (e.key && e.key !== 'Enter') return;
+    const n = parseInt(pageInput, 10);
+    if (!isNaN(n)) {
+      const target = Math.min(Math.max(1, n), totalPages);
+      if (target !== currentPage) goToPage(target);
+      if (e.key === 'Enter') e.target.blur();
+    }
+    setPageInput('');
   };
 
   const handleManualCheck = () => {
@@ -754,6 +847,8 @@ useEffect(() => {
   };
   
   const openSidePanel = (data) => {
+    setTierFilter('all'); // 新一次检查从「全部」开始，避免上次的筛选把新结果筛空
+    setSidePanelCollapsed(false); // 新结果直接展开显示
     setSidePanel({ visible: true, data });
   };
 
@@ -764,9 +859,10 @@ useEffect(() => {
 
   // 把当前不一致列表（用户已筛掉"不再提醒"的，剩下需要确认的）导出为 CSV
   const handleExportInconsistencies = () => {
-    const rows = sidePanel.data || [];
+    // 导出跟随当前的红色/黄色/蓝色筛选，看到什么就导出什么
+    const rows = (sidePanel.data || []).filter(item => tierFilter === 'all' || TIER_COLOR[item.tier] === tierFilter);
     if (!rows.length) {
-      toast.error('没有可导出的不一致项');
+      toast.error('当前筛选下没有可导出的不一致项');
       return;
     }
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -899,15 +995,15 @@ useEffect(() => {
     return found ? found.id : null;
   };
 
-  // 给原表目标列某一行写背景色+批注；note 传 null 表示清除标记
-  const writeFlagToSheet = async (rowNum, note) => {
+  // 给原表目标列某一行写背景色+批注；color 传 null 表示清除（染白+清批注）
+  const writeCellMark = async (rowNum, color, note = '') => {
     const numericSheetId = getNumericSheetId();
     if (numericSheetId == null) throw new Error('未找到工作表 ID，请先刷新');
     const columnIndex = colToIndex(targetCol);
-    const isClear = note === null;
+    const isClear = color === null;
     const cellValue = isClear
-      ? { userEnteredFormat: { backgroundColor: { red: 1, green: 1, blue: 1 } }, note: '' }
-      : { userEnteredFormat: { backgroundColor: QUESTION_FLAG_COLOR }, note };
+      ? { userEnteredFormat: { backgroundColor: CLEAR_MARK_COLOR }, note: '' }
+      : { userEnteredFormat: { backgroundColor: color }, note };
     const body = {
       requests: [{
         updateCells: {
@@ -927,6 +1023,55 @@ useEffect(() => {
     }
   };
 
+  // 仅清除本地的修改标记（互斥时用，原表颜色已被另一色覆盖，无需再写表）
+  const clearModifiedLocal = (rowNum) => {
+    setModifiedMap(prev => {
+      if (!prev[rowNum]) return prev;
+      const next = { ...prev };
+      delete next[rowNum];
+      if (sheet?.id) chrome.storage.local.set({ [modifiedStorageKey()]: next });
+      return next;
+    });
+  };
+
+  // 仅清除本地的疑问标记（互斥时用）
+  const clearFlagLocal = (rowNum) => {
+    setFlaggedMap(prev => {
+      if (!prev[rowNum]) return prev;
+      const next = { ...prev };
+      delete next[rowNum];
+      if (sheet?.id) chrome.storage.local.set({ [flagStorageKey()]: next });
+      return next;
+    });
+  };
+
+  // 左键点 ✏️：标记/取消“已修改”，染黄，无备注；和疑问标记互斥
+  const handleToggleModified = async (i) => {
+    const row = rowsRef.current[i];
+    if (!row) return;
+    const rowNum = row.index;
+    const removing = !!modifiedMap[rowNum];
+
+    toast.loading(removing ? '正在取消标记...' : '正在标记...', { id: 'markRow' });
+    try {
+      await writeCellMark(rowNum, removing ? null : MODIFIED_MARK_COLOR, '');
+      setModifiedMap(prev => {
+        const next = { ...prev };
+        if (removing) delete next[rowNum];
+        else next[rowNum] = true;
+        if (sheet?.id) chrome.storage.local.set({ [modifiedStorageKey()]: next });
+        return next;
+      });
+      // 互斥：标修改会用黄色覆盖原有的紫色，同步清掉疑问标记
+      if (!removing) clearFlagLocal(rowNum);
+      toast.dismiss('markRow');
+      toast.success(removing ? '已取消修改标记' : '已标记修改');
+    } catch (err) {
+      toast.dismiss('markRow');
+      toast.error('操作失败: ' + err.message);
+    }
+  };
+
   // 左键点 🚩：直接标记/取消，不弹备注（大多数情况用这个）
   const handleToggleFlag = async (i) => {
     const row = rowsRef.current[i];
@@ -938,7 +1083,7 @@ useEffect(() => {
     toast.loading(removing ? '正在取消标记...' : '正在标记...', { id: 'flagRow' });
     try {
       // 取消时传 null 清除；标记时保留已有备注（一般为空）
-      await writeFlagToSheet(rowNum, removing ? null : (existing?.note ?? ''));
+      await writeCellMark(rowNum, removing ? null : QUESTION_FLAG_COLOR, existing?.note ?? '');
       setFlaggedMap(prev => {
         const next = { ...prev };
         if (removing) delete next[rowNum];
@@ -946,6 +1091,8 @@ useEffect(() => {
         if (sheet?.id) chrome.storage.local.set({ [flagStorageKey()]: next });
         return next;
       });
+      // 互斥：标疑问会用紫色覆盖原有的黄色，需同步清掉该行的修改标记
+      if (!removing) clearModifiedLocal(rowNum);
       toast.dismiss('flagRow');
       toast.success(removing ? '已取消该行疑问标记' : '已标记疑问');
     } catch (err) {
@@ -967,12 +1114,14 @@ useEffect(() => {
 
     toast.loading('正在写入备注...', { id: 'flagRow' });
     try {
-      await writeFlagToSheet(rowNum, note); // 设色+写批注，未标记的会一并标上
+      await writeCellMark(rowNum, QUESTION_FLAG_COLOR, note); // 设色+写批注，未标记的会一并标上
       setFlaggedMap(prev => {
         const next = { ...prev, [rowNum]: { note } };
         if (sheet?.id) chrome.storage.local.set({ [flagStorageKey()]: next });
         return next;
       });
+      // 互斥：紫色覆盖了原有的黄色，同步清掉修改标记
+      clearModifiedLocal(rowNum);
       toast.dismiss('flagRow');
       toast.success(note ? '疑问备注已保存' : '已清空备注（仍保留标记）');
     } catch (err) {
@@ -1571,6 +1720,17 @@ useEffect(() => {
     document.body.style.userSelect = 'none';
   };
 
+  // ---- 检查结果按颜色过滤（红：漏译/术语不一致；黄：疑似待复核；蓝：术语库疑似过时）----
+  const tierColorOf = (item) => TIER_COLOR[item?.tier] || 'other';
+  const filterCounts = { red: 0, yellow: 0, blue: 0 };
+  (sidePanel.data || []).forEach(d => {
+    const c = tierColorOf(d);
+    if (c in filterCounts) filterCounts[c] += 1;
+  });
+  const visiblePanelItems = (sidePanel.data || []).filter(
+    d => tierFilter === 'all' || tierColorOf(d) === tierFilter
+  );
+
   return (
       <div className="workspace" onMouseUp={(e) => { handleTextSelect(e); handleSelectionMouseUp(); }} onKeyDown={handleKeyDown} tabIndex={-1} ref={workspaceRef}>
       <div className={`workspace-header${headerCollapsed ? ' collapsed' : ''}`}>
@@ -1656,7 +1816,21 @@ useEffect(() => {
               <>
                 <button onClick={() => goToPage(1)} disabled={currentPage === 1 || loadingData}>«</button>
                 <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage === 1 || loadingData}>‹</button>
-                <span className="page-info">{currentPage} / {totalPages}</span>
+                <span className="page-info">
+                  <input
+                    className="page-jump-input"
+                    type="number"
+                    min="1"
+                    max={totalPages}
+                    value={pageInput}
+                    placeholder={currentPage}
+                    onChange={(e) => setPageInput(e.target.value)}
+                    onKeyDown={handlePageJump}
+                    onBlur={handlePageJump}
+                    disabled={loadingData}
+                    title="输入页码后回车跳转"
+                  /> / {totalPages}
+                </span>
                 <button onClick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages || loadingData}>›</button>
                 <button onClick={() => goToPage(totalPages)} disabled={currentPage === totalPages || loadingData}>»</button>
                 <select 
@@ -1808,6 +1982,8 @@ useEffect(() => {
               flagNote={flaggedMap[row.index]?.note || ''}
               onToggleFlag={handleToggleFlag}
               onFlagNote={handleFlagNote}
+              isModified={!!modifiedMap[row.index]}
+              onToggleModified={handleToggleModified}
             />
           ))}
         </div>
@@ -1816,7 +1992,20 @@ useEffect(() => {
           <div className="pagination">
             <button onClick={() => goToPage(1)} disabled={currentPage === 1}>首页</button>
             <button onClick={() => goToPage(currentPage - 1)} disabled={currentPage === 1}>上一页</button>
-            <span className="page-info">第 {currentPage} / {totalPages} 页 (共 {totalRows} 行)</span>
+            <span className="page-info">
+              第 <input
+                className="page-jump-input"
+                type="number"
+                min="1"
+                max={totalPages}
+                value={pageInput}
+                placeholder={currentPage}
+                onChange={(e) => setPageInput(e.target.value)}
+                onKeyDown={handlePageJump}
+                onBlur={handlePageJump}
+                title="输入页码后回车跳转"
+              /> / {totalPages} 页 (共 {totalRows} 行)
+            </span>
             <button onClick={() => goToPage(currentPage + 1)} disabled={currentPage === totalPages}>下一页</button>
             <button onClick={() => goToPage(totalPages)} disabled={currentPage === totalPages}>末页</button>
             <select 
@@ -1856,25 +2045,72 @@ useEffect(() => {
               >
                 导出 CSV
               </button>
+              <button
+                className="side-panel-collapse-btn"
+                onClick={() => setSidePanelCollapsed(true)}
+                title="暂时收起面板（不关闭、结果保留），方便编辑表格；点右侧边条可再展开"
+              >
+                收起
+              </button>
               <button className="side-panel-close" onClick={closeSidePanel}>×</button>
             </div>
           </div>
           <div className="side-panel-body">
             <p className="side-panel-summary">
               共 {sidePanel.data.length} 条提示
-              （🟥 {sidePanel.data.filter(d => d.tier === 'MISSING').length}
-              {' '}🔴 {sidePanel.data.filter(d => d.tier === 'CONFIRMED').length}
-              {' '}🔵 {sidePanel.data.filter(d => d.tier === 'GLOSSARY_DRIFT').length}
-              {' '}🟡 {sidePanel.data.filter(d => d.tier === 'REVIEW').length}）
+              {tierFilter !== 'all' && ` · 当前筛选 ${visiblePanelItems.length} 条`}
             </p>
+            <div className="side-panel-filter-row">
+              <button
+                className={`side-panel-filter-chip ${tierFilter === 'all' ? 'active' : ''}`}
+                onClick={() => setTierFilter('all')}
+                title="显示全部提示"
+              >
+                全部 <span className="side-panel-filter-count">{sidePanel.data.length}</span>
+              </button>
+              <button
+                className={`side-panel-filter-chip chip-red ${tierFilter === 'red' ? 'active' : ''}`}
+                onClick={() => setTierFilter('red')}
+                disabled={filterCounts.red === 0}
+                title="红色：漏译/截断 + 术语不一致"
+              >
+                <span className="side-panel-filter-dot dot-red" />
+                红色 <span className="side-panel-filter-count">{filterCounts.red}</span>
+              </button>
+              <button
+                className={`side-panel-filter-chip chip-yellow ${tierFilter === 'yellow' ? 'active' : ''}`}
+                onClick={() => setTierFilter('yellow')}
+                disabled={filterCounts.yellow === 0}
+                title="黄色：疑似不一致，建议人工复核"
+              >
+                <span className="side-panel-filter-dot dot-yellow" />
+                黄色 <span className="side-panel-filter-count">{filterCounts.yellow}</span>
+              </button>
+              <button
+                className={`side-panel-filter-chip chip-blue ${tierFilter === 'blue' ? 'active' : ''}`}
+                onClick={() => setTierFilter('blue')}
+                disabled={filterCounts.blue === 0}
+                title="蓝色：术语库疑似过时（全表多数行未用标准译法）"
+              >
+                <span className="side-panel-filter-dot dot-blue" />
+                蓝色 <span className="side-panel-filter-count">{filterCounts.blue}</span>
+              </button>
+            </div>
             <div className="side-panel-list">
-              {sidePanel.data.slice(0, 200).map((item, i) => (
+              {visiblePanelItems.slice(0, 200).map((item, i) => (
                 <div key={i} className={`side-panel-item side-panel-item-${item.tier.toLowerCase()}`} onClick={() => handleSidePanelRowClick(item)}>
                   <div className="side-panel-item-main">
                     <span className="side-panel-tier-icon">{item.icon}</span>
                     {item.rowNo != null && <span className="side-panel-row">行 {item.rowNo}</span>}
                     <span className="side-panel-label">{item.label}</span>
-                    <span className="side-panel-detail">{item.detail}</span>
+                    {(item.tier === 'CONFIRMED' || item.tier === 'REVIEW') ? (
+                      <>
+                        <span className="side-panel-detail-expected">期待 {item.expected}</span>
+                        <span className="side-panel-detail-clip" title={`原文：${item.source}`}>原文：{item.source}</span>
+                      </>
+                    ) : (
+                      <span className="side-panel-detail-clip" title={item.detail}>{item.detail}</span>
+                    )}
                     <span className="side-panel-confidence">置信度 {Math.round(item.confidence * 100)}%</span>
                   </div>
                   {item.aiVerdict && (
@@ -1897,14 +2133,27 @@ useEffect(() => {
                   </button>
                 </div>
               ))}
-              {sidePanel.data.length > 200 && (
-                <p className="side-panel-more">...还有 {sidePanel.data.length - 200} 处未显示</p>
+              {visiblePanelItems.length > 200 && (
+                <p className="side-panel-more">...还有 {visiblePanelItems.length - 200} 处未显示</p>
+              )}
+              {visiblePanelItems.length === 0 && (
+                <p className="side-panel-empty">当前筛选下没有提示</p>
               )}
             </div>
           </div>
         </div>
       )}
 
+      {sidePanel.visible && sidePanelCollapsed && (
+        <button
+          className="side-panel-collapsed-bar"
+          onClick={() => setSidePanelCollapsed(false)}
+          title="展开检查结果面板"
+        >
+          <span className="side-panel-collapsed-count">{sidePanel.data.length}</span>
+          检查结果
+        </button>
+      )}
 
       {floatMark.visible && (
         <div 

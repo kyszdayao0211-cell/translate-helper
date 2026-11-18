@@ -23,6 +23,8 @@ function Panel() {
   const [showTermsCol, setShowTermsCol] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  // 与工作区工具栏共用的折叠状态：折叠时把顶部合并行也一起收起
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
 
   useEffect(() => {
     chrome.storage.local.get(['google_token', 'sheetSettings', 'sheetSettingsMap'], (result) => {
@@ -57,6 +59,20 @@ function Panel() {
     if (!token || !currentSheet?.id) return;
     fetchSheetsList(currentSheet.id);
   }, [token, currentSheet?.id]);
+
+  // 折叠状态由工作区的 ▾ 按钮写入 storage，这里同步监听，保证顶部合并行一起收放
+  useEffect(() => {
+    chrome.storage.local.get(['headerCollapsed'], (r) => {
+      if (r.headerCollapsed !== undefined) setHeaderCollapsed(!!r.headerCollapsed);
+    });
+    const listener = (changes, area) => {
+      if (area === 'local' && changes.headerCollapsed) {
+        setHeaderCollapsed(!!changes.headerCollapsed.newValue);
+      }
+    };
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
+  }, []);
 
   const fetchSheetsList = async (spreadsheetId) => {
     if (!spreadsheetId) return;
@@ -229,7 +245,8 @@ function Panel() {
 
   return (
     <div className="panel-container">
-      <div className="panel-data-bar">
+      {!(headerCollapsed && currentSheet && !showSetup) && (
+      <div className="panel-top-bar">
         <span className="panel-data-bar-label">数据备份:</span>
         <button className="backup-btn" onClick={handleBackup} title="导出全部术语库和设置为 JSON 文件">
           备份数据
@@ -237,27 +254,26 @@ function Panel() {
         <button className="restore-btn" onClick={handleRestore} title="从备份 JSON 恢复（会覆盖当前数据）">
           恢复数据
         </button>
-      </div>
-
-      {currentSheet && !showSetup && (
-        <div className="panel-toolbar">
-          <div className="toolbar-left">
+        {currentSheet && !showSetup && (
+          <>
+            <span className="panel-top-divider" />
             <span className="current-sheet-info">
               当前表: {currentSheet?.title || currentSheet?.id}
             </span>
-          </div>
-          <div className="toolbar-right">
-            <button className="toolbar-btn" onClick={handleNewTable} title="新表配置">
-              新建表格
-            </button>
-            <button className="toolbar-btn" onClick={handleReload} title="重新加载">
-              重新加载
-            </button>
-            <button className="toolbar-btn close-btn" onClick={handleCloseTable} title="关闭当前表 (Ctrl+W)">
-              关闭当前表
-            </button>
-          </div>
-        </div>
+            <div className="panel-top-actions">
+              <button className="toolbar-btn" onClick={handleNewTable} title="新表配置">
+                新建表格
+              </button>
+              <button className="toolbar-btn" onClick={handleReload} title="重新加载">
+                重新加载
+              </button>
+              <button className="toolbar-btn close-btn" onClick={handleCloseTable} title="关闭当前表 (Ctrl+W)">
+                关闭当前表
+              </button>
+            </div>
+          </>
+        )}
+      </div>
       )}
 
       {showSetup || !currentSheet ? (

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
 import TermImportPanel from './TermImportPanel';
 import { authedFetch } from '../utils/googleAuth';
+import { parseGlossaryFile, termsToCsv, termsToXlsx } from '../utils/glossaryFile';
 
 const GLOSSARY_HEADER = ['source', 'target', 'notes'];
 
@@ -378,24 +379,40 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
     }
   };
 
-  const handleExportGlossary = async () => {
-    if (!spreadsheetId) { toast.error('请先选择表格'); return; }
-    const resp = await sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token });
-    if (!resp.data) { toast.error('_glossary tab 不存在'); return; }
-    const rows = resp.data.slice(1); // 跳过表头
-    const json = rows
-      .filter(r => r[0])
-      .map(r => ({ source: r[0] || '', target: r[1] || '', notes: r[2] || '' }));
-    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+  const downloadBlob = (blob, fileName) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `glossary_${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    toast.success(`已导出 ${json.length} 条术语`);
+  };
+
+  const handleExportGlossary = async (format = 'json') => {
+    if (!spreadsheetId) { toast.error('请先选择表格'); return; }
+    const resp = await sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token });
+    if (!resp.data) { toast.error('_glossary tab 不存在'); return; }
+    const rows = resp.data.slice(1); // 跳过表头
+    const terms = rows
+      .filter(r => r[0])
+      .map(r => ({ source: r[0] || '', target: r[1] || '', notes: r[2] || '' }));
+    if (terms.length === 0) { toast.error('_glossary tab 里没有术语'); return; }
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (format === 'csv') {
+      downloadBlob(new Blob([termsToCsv(terms)], { type: 'text/csv;charset=utf-8;' }), `glossary_${stamp}.csv`);
+    } else if (format === 'xlsx') {
+      const buf = await termsToXlsx(terms);
+      downloadBlob(
+        new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+        `glossary_${stamp}.xlsx`
+      );
+    } else {
+      downloadBlob(new Blob([JSON.stringify(terms, null, 2)], { type: 'application/json' }), `glossary_${stamp}.json`);
+    }
+    toast.success(`已导出 ${terms.length} 条术语`);
   };
 
   const handleExportGuide = async () => {
@@ -419,17 +436,87 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
     if (!spreadsheetId) { toast.error('请先选择表格'); return; }
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json';
+    input.accept = '.json,.csv,.xlsx,.xls,.txt';
     input.onchange = async (e) => {
       const file = e.target.files[0];
       if (!file) return;
       try {
-        const text = await file.text();
-        const data = JSON.parse(text);
-        if (!Array.isArray(data)) throw new Error('格式错误');
-        const values = [['source', 'target', 'notes'], ...data.map(r => [r.source || '', r.target || '', r.notes || ''])];
+        const { terms, format } = await parseGlossaryFile(file);
+        if (!terms || terms.length === 0) {
+          toast.error('文件里没解析到有效术语');
+          return;
+        }
+        // 安全护栏：写入当前表格的 _glossary 标签页。先检查它是否存在，
+        // 避免在不经意间为“公用表格”新建标签页。不存在时明确询问用户。
+        const check = await sendBgMessage({ type: 'READ_SHEET_TAB', spreadsheetId, tabName: '_glossary', token });
+        if (!check?.data) {
+          const ok = window.confirm(
+            '当前文档没有 _glossary 标签页。\n\n' +
+            '“写入 _glossary（覆盖）”会改写该标签页，并因此自动创建它。\n' +
+            '这是公用表格，确定要创建 _glossary 并导入吗？\n\n' +
+            '（如果不想改动表格，请改用「从文件导入为独立术语库」，完全不会写入表格）'
+          );
+          if (!ok) { toast('已取消，未改动表格'); return; }
+          const createResp = await sendBgMessage({ type: 'CREATE_SHEET_TAB', spreadsheetId, tabName: '_glossary' });
+          if (createResp?.error) throw new Error(createResp.error);
+        }
+        const values = [GLOSSARY_HEADER, ...terms.map(t => [t.source, t.target, t.notes || ''])];
         await writeTabFull('_glossary', values);
-        toast.success(`已导入 ${data.length} 条术语到 _glossary tab`);
+        toast.success(`已从 ${format} 导入 ${terms.length} 条术语到 _glossary tab`);
+        // 已绑定文档术语库时自动重新拉取，免去手动点「刷新术语库」
+        if (isGlossaryBound) await bindDocGlossary();
+      } catch (err) {
+        toast.error('导入失败: ' + err.message);
+      }
+    };
+    document.body.appendChild(input);
+    input.click();
+    document.body.removeChild(input);
+  };
+
+  // 把本地文件导入成一个「独立术语库」：术语存在浏览器本地（chrome.storage），
+  // 完全不写入当前 Google 表格。适合不想在公用表格上建 _glossary 的场景。
+  const handleImportFileToLocalLib = () => {
+    if (!spreadsheetId) { toast.error('请先选择表格'); return; }
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,.csv,.xlsx,.xls,.txt';
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const { terms, format } = await parseGlossaryFile(file);
+        if (!terms || terms.length === 0) {
+          toast.error('文件里没解析到有效术语');
+          return;
+        }
+        const libName = file.name.replace(/\.[^.]+$/, '') || '导入的术语库';
+        const libId = `lib_${Date.now()}`;
+        const newLib = {
+          id: libId,
+          name: libName,
+          language: 'local',
+          description: `从 ${format} 文件导入`,
+          source: 'local',
+          terms: terms.map(t => ({ source: t.source, target: t.target, note: t.notes || '' })),
+          termCount: terms.length,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        // 1) 写入术语库列表
+        const result = await chrome.storage.local.get(['termLibraries']);
+        const libs = result.termLibraries || [];
+        libs.push(newLib);
+        // 2) 同步进全局 terms（带 libraryId），供翻译面板按绑定库过滤使用
+        const global = (await chrome.storage.local.get(['terms'])).terms || [];
+        const libTermsForGlobal = terms.map(t => ({
+          source: t.source, target: t.target, note: t.notes || '', libraryId: libId,
+        }));
+        await chrome.storage.local.set({ termLibraries: libs, terms: [...global, ...libTermsForGlobal] });
+        setLibraries(libs);
+        setSelectedLibId(libId);
+        onLibraryChange(libId);
+        toast.success(`已导入 ${terms.length} 条术语为独立术语库「${libName}」（不写入表格）`);
       } catch (err) {
         toast.error('导入失败: ' + err.message);
       }
@@ -610,15 +697,24 @@ function TermLibrarySelector({ currentLibraryId, onLibraryChange, token, spreads
         </div>
         {showDocIO && (
           <div className="doc-glossary-body">
+            <div className="doc-io-warn">
+              ⚠️ 以下“写入”操作会直接改写当前表格的 _glossary / _guide 标签页。当前若是公用表格，请谨慎；不想改动表格可选用「导入为独立术语库」。
+            </div>
             <div className="doc-io-row">
               <span className="doc-io-label">_glossary tab:</span>
-              <button className="doc-io-btn" onClick={handleExportGlossary}>导出 JSON</button>
-              <button className="doc-io-btn" onClick={handleImportGlossaryFile}>从 JSON 导入（覆盖）</button>
+              <button className="doc-io-btn" onClick={() => handleExportGlossary('json')}>导出 JSON</button>
+              <button className="doc-io-btn" onClick={() => handleExportGlossary('csv')}>导出 CSV</button>
+              <button className="doc-io-btn" onClick={() => handleExportGlossary('xlsx')}>导出 Excel</button>
+              <button className="doc-io-btn" onClick={handleImportGlossaryFile} title="会覆盖当前表格的 _glossary 标签页；不存在时先询问再创建">写入 _glossary（覆盖）</button>
+            </div>
+            <div className="doc-io-row">
+              <span className="doc-io-label">独立术语库:</span>
+              <button className="doc-io-btn doc-io-btn-primary" onClick={handleImportFileToLocalLib} title="把文件导入成一个独立术语库，存在浏览器本地，完全不写入当前表格">从文件导入为独立术语库（不写表格）</button>
             </div>
             <div className="doc-io-row">
               <span className="doc-io-label">_guide tab:</span>
               <button className="doc-io-btn" onClick={handleExportGuide}>导出 TXT</button>
-              <button className="doc-io-btn" onClick={handleImportGuideFile}>从 TXT 导入（覆盖）</button>
+              <button className="doc-io-btn" onClick={handleImportGuideFile} title="会覆盖当前表格的 _guide 标签页">写入 _guide（覆盖）</button>
             </div>
           </div>
         )}

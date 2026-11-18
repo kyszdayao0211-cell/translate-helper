@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>快乐拼豆 · 原型 v2</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "PingFang SC","Microsoft YaHei",sans-serif;
+    background: linear-gradient(160deg,#fdf3ff,#eef6ff);
+    color: #333; min-height: 100vh; padding: 18px;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  h1 { font-size: 22px; margin: 4px 0 2px; }
+  .sub { color:#888; font-size: 12.5px; margin-bottom: 12px; text-align:center; max-width:460px; }
+  .panel {
+    background:#fff; border-radius: 16px; padding: 14px 16px;
+    box-shadow: 0 6px 24px rgba(120,120,180,.12); margin-bottom: 14px;
+    width: 100%; max-width: 460px;
+  }
+  .panel-title { font-size:12.5px; color:#999; margin-bottom:10px; display:flex; justify-content:space-between; }
+  #board { display:grid; gap:5px; justify-content:center; }
+  .cell {
+    width: 40px; height: 40px; border-radius: 9px; position:relative;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+  }
+  .cell.gap { background:transparent; cursor:default; }
+  .cell.slot { border: 3px solid; } /* border = target color */
+  .dot { width: 24px; height: 24px; border-radius:50%; box-shadow: inset 0 -3px 0 rgba(0,0,0,.16); }
+  .cell.empty .ghost { width:20px; height:20px; border-radius:50%; opacity:.28; }
+  .cell.locked { box-shadow: 0 0 0 2px #fff, 0 0 10px rgba(0,0,0,.12); }
+  .cell.locked .dot::after { content:"✓"; color:#fff; font-size:13px; font-weight:700;
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+  .cell.sel { outline: 3px dashed #ff9500; outline-offset: 2px; z-index:2; }
+  .cell.canput { animation: blink 1s infinite; }
+  @keyframes blink { 50% { box-shadow: 0 0 0 3px #ffcf6b inset; } }
+
+  #buffer { display:grid; grid-template-columns: repeat(5, 1fr); gap:6px; }
+  .bslot {
+    height: 42px; border-radius: 10px; background:#f4f4fa; border:2px solid #ececf4;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+  }
+  .bslot.sel { outline: 3px dashed #ff9500; outline-offset:1px; }
+  .btns { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; }
+  button { border:none; border-radius: 10px; padding: 9px 16px; font-size: 14px; cursor:pointer;
+    background:#7a6cf0; color:#fff; box-shadow:0 3px 10px rgba(122,108,240,.35); }
+  button.ghost { background:#eee; color:#666; box-shadow:none; }
+  button:disabled { opacity:.4; cursor:default; }
+  #msg { text-align:center; font-size:15px; min-height:22px; margin: 2px 0 10px; font-weight:600; }
+  .legend { font-size:12px; color:#aaa; text-align:center; margin-top:6px; }
+</style>
+</head>
+<body>
+  <h1>快乐拼豆 🧩 <span style="font-size:13px;color:#bbb">原型 v2</span></h1>
+  <div class="sub">格子<b>边框色</b>=该格目标颜色，<b>中间圆点</b>=现在放着的豆子。点豆子选中相邻同色一片，再点暂存栏或对应空格。</div>
+
+  <div id="msg"></div>
+
+  <div class="panel">
+    <div class="panel-title"><span>主板 = 图纸（把每颗豆子归位到边框同色的格子）</span><span id="progress"></span></div>
+    <div id="board"></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title"><span>暂存板（点这里把选中的一片存进来；或点栏里的豆子选它再放回主板）</span><span id="bufcount"></span></div>
+    <div id="buffer"></div>
+  </div>
+
+  <div class="btns">
+    <button id="undo" class="ghost">撤销</button>
+    <button id="deselect" class="ghost">取消选中</button>
+    <button id="reset">重新开始</button>
+  </div>
+  <div class="legend">连在一起的同色豆子会一起移动 · 放对位置就固定不动</div>
+
+<script>
+const COLORS = { P:"#ff8fb1", R:"#ff4d5e", W:"#ffffff", B:"#8fd3ff", Y:"#ffe066", G:"#9be08a" };
+const NAME   = { P:"粉", R:"红", W:"白", B:"蓝", Y:"黄", G:"绿" };
+// 图纸点阵：. = 空隙(无格子)，字母 = 该格目标颜色（一颗爱心）
+const GRID = [
+  ".BB..BB.",
+  "BPRRRRPB",
+  "BRWRRWRB",
+  ".BRRRRB.",
+  "..BRRB..",
+  "...WW...",
+];
+const COLS = GRID[0].length, ROWS = GRID.length;
+const BUFFER_MAX = 10;
+
+let cells, buffer, selected, history, won;
+
+function build(){
+  cells = [];
+  const beads = [];
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    const ch = GRID[r][c];
+    if(ch==="."){ cells.push({gap:true}); }
+    else { cells.push({target:ch, bead:null, locked:false}); beads.push(ch); }
+  }
+  // 打乱豆子（是目标豆子的一个排列），随机撒进有格子的位置
+  for(let i=beads.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [beads[i],beads[j]]=[beads[j],beads[i]]; }
+  let bi=0;
+  cells.forEach(c=>{ if(!c.gap){ c.bead = beads[bi++]; } });
+  buffer=[]; selected=null; history=[]; won=false;
+  lockCorrect();
+  render();
+}
+
+function idxRC(i){ return [Math.floor(i/COLS), i%COLS]; }
+function neighbors(i){
+  const [r,c]=idxRC(i); const out=[];
+  if(r>0) out.push(i-COLS);
+  if(r<ROWS-1) out.push(i+COLS);
+  if(c>0) out.push(i-1);
+  if(c<COLS-1) out.push(i+1);
+  return out.filter(k=>cells[k] && !cells[k].gap);
+}
+function floodGroup(start){
+  const color = cells[start].bead, seen=new Set([start]), stack=[start], group=[];
+  while(stack.length){
+    const i=stack.pop(); group.push(i);
+    for(const n of neighbors(i)){
+      if(!seen.has(n) && !cells[n].locked && cells[n].bead===color){ seen.add(n); stack.push(n); }
+    }
+  }
+  return group;
+}
+function emptyTargets(color){
+  const out=[];
+  cells.forEach((c,i)=>{ if(!c.gap && c.bead===null && c.target===color) out.push(i); });
+  return out;
+}
+function lockCorrect(){ cells.forEach(c=>{ if(!c.gap && c.bead && c.bead===c.target) c.locked=true; }); }
+function snapshot(){ history.push(JSON.stringify({cells,buffer})); if(history.length>60) history.shift(); }
+
+function msg(t){ document.getElementById("msg").innerHTML=t; }
+
+function onCell(i){
+  if(won) return;
+  const cell=cells[i];
+  if(cell.gap) return;
+  if(cell.bead===null){ // 空格：尝试放入选中的豆子
+    if(selected && cell.target===selected.color){ place(); }
+    else if(selected){ msg("这格要放 "+NAME[cell.target]+"色，你手里是 "+NAME[selected.color]+"色"); }
+    else { msg("这格是 "+NAME[cell.target]+"色，选一片 "+NAME[cell.target]+"豆放进来"); }
+    return;
+  }
+  if(cell.locked){ msg("这颗已经拼好固定啦～"); return; }
+  selected={ color:cell.bead, source:"board", cells:floodGroup(i) };
+  msg("选中了 "+selected.cells.length+" 颗 "+NAME[selected.color]+"豆：点空格归位，或点暂存板存起来");
+  render();
+}
+
+function onBuffer(i){
+  if(won) return;
+  if(selected && selected.source==="board"){ stash(); return; }
+  const col=buffer[i]; if(col===undefined) { msg("空的暂存位"); return; }
+  selected={ color:col, source:"buffer" };
+  msg("从暂存板选了 "+NAME[col]+"豆：点主板上 "+NAME[col]+"色的空格放进去");
+  render();
+}
+
+function place(){
+  const X=selected.color, E=emptyTargets(X);
+  if(E.length===0){ msg("现在没有空的 "+NAME[X]+"格"); return; }
+  snapshot();
+  if(selected.source==="board"){
+    const K=selected.cells.length, n=Math.min(K,E.length), leftover=K-n;
+    if(leftover > BUFFER_MAX-buffer.length){ history.pop(); msg("放不下：暂存栏接不住多出的 "+leftover+" 颗"); return; }
+    selected.cells.forEach(ci=> cells[ci].bead=null);
+    for(let k=0;k<n;k++) cells[E[k]].bead=X;
+    for(let k=0;k<leftover;k++) buffer.push(X);
+  } else {
+    const avail=buffer.filter(c=>c===X).length, n=Math.min(avail,E.length);
+    for(let k=0;k<n;k++){ const bi=buffer.indexOf(X); buffer.splice(bi,1); }
+    for(let k=0;k<n;k++) cells[E[k]].bead=X;
+  }
+  lockCorrect(); selected=null; checkWin(); render();
+}
+
+function stash(){
+  const X=selected.color, K=selected.cells.length, free=BUFFER_MAX-buffer.length;
+  if(K>free){ msg("暂存板放不下这一片（"+K+"颗），只剩 "+free+" 格"); return; }
+  snapshot();
+  selected.cells.forEach(ci=> cells[ci].bead=null);
+  for(let k=0;k<K;k++) buffer.push(X);
+  lockCorrect(); selected=null; msg("存好了～"); render();
+}
+
+function checkWin(){
+  if(cells.every(c=>c.gap || c.locked)){ won=true; msg("🎉 拼好啦！爱心图纸完整啦～"); }
+}
+function undo(){ if(history.length){ const s=JSON.parse(history.pop()); cells=s.cells; buffer=s.buffer; selected=null; won=false; render(); } }
+function deselect(){ selected=null; msg(""); render(); }
+
+function render(){
+  const board=document.getElementById("board");
+  board.style.gridTemplateColumns=`repeat(${COLS}, 40px)`;
+  board.innerHTML="";
+  const canPut = selected ? new Set(emptyTargets(selected.color)) : new Set();
+  const selSet = (selected && selected.source==="board") ? new Set(selected.cells) : new Set();
+  cells.forEach((c,i)=>{
+    const d=document.createElement("div");
+    if(c.gap){ d.className="cell gap"; board.appendChild(d); return; }
+    d.className="cell slot";
+    d.style.borderColor=COLORS[c.target];
+    if(c.bead===null){
+      d.classList.add("empty");
+      const g=document.createElement("div"); g.className="ghost"; g.style.background=COLORS[c.target];
+      d.appendChild(g);
+      if(canPut.has(i)) d.classList.add("canput");
+    } else {
+      const dot=document.createElement("div"); dot.className="dot"; dot.style.background=COLORS[c.bead];
+      d.appendChild(dot);
+      if(c.locked) d.classList.add("locked");
+      if(selSet.has(i)) d.classList.add("sel");
+    }
+    d.onclick=()=>onCell(i);
+    board.appendChild(d);
+  });
+  const total=cells.filter(c=>!c.gap).length, done=cells.filter(c=>c.locked).length;
+  document.getElementById("progress").textContent=`${done}/${total}`;
+
+  const buf=document.getElementById("buffer"); buf.innerHTML="";
+  const selBufColor = (selected && selected.source==="buffer") ? selected.color : null;
+  for(let i=0;i<BUFFER_MAX;i++){
+    const s=document.createElement("div"); s.className="bslot";
+    if(buffer[i]!==undefined){
+      const b=document.createElement("div"); b.className="dot"; b.style.background=COLORS[buffer[i]]; s.appendChild(b);
+      if(buffer[i]===selBufColor) s.classList.add("sel");
+    }
+    s.onclick=()=>onBuffer(i);
+    buf.appendChild(s);
+  }
+  document.getElementById("bufcount").textContent=`${buffer.length}/${BUFFER_MAX}`;
+  document.getElementById("undo").disabled=history.length===0;
+}
+
+document.getElementById("undo").onclick=undo;
+document.getElementById("reset").onclick=build;
+document.getElementById("deselect").onclick=deselect;
+build();
+</script>
+</body>
+</html>

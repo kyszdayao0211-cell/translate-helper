@@ -27,11 +27,11 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
+  padding: 5px 14px;
   background: #f8f9fa;
   border-bottom: 1px solid #eee;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 5px;
   flex-shrink: 0;
 }
 
@@ -66,7 +66,7 @@
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -151,6 +151,26 @@
   padding: 0 4px;
 }
 
+.page-jump-input {
+  width: 42px;
+  padding: 2px 4px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: center;
+  margin: 0 2px;
+}
+
+/* 去掉数字输入框右侧的上下箭头，省空间 */
+.page-jump-input::-webkit-outer-spin-button,
+.page-jump-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.page-jump-input {
+  -moz-appearance: textfield;
+}
+
 .check-all-btn {
   background: #9c27b0;
   color: white;
@@ -192,7 +212,7 @@
 .sheet-info {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 10px;
   font-size: 13px;
   color: #666;
   flex-wrap: wrap;
@@ -239,7 +259,7 @@
 
 .col-settings input[type="text"] {
   width: 40px;
-  padding: 4px 8px;
+  padding: 2px 6px;
   border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 12px;
@@ -912,14 +932,28 @@
 }
 
 /* Panel Toolbar */
-.panel-data-bar {
+.panel-top-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 5px 12px;
   background: #eef2f7;
   border-bottom: 1px solid #dbe1e8;
   flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.panel-top-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: #cbd3dd;
+}
+
+.panel-top-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .panel-data-bar-label {
@@ -953,31 +987,10 @@
   background: #e65100;
 }
 
-.panel-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  background: #f8f9fa;
-  border-bottom: 1px solid #ddd;
-  flex-shrink: 0;
-}
-
-.toolbar-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .current-sheet-info {
   font-size: 13px;
   font-weight: 500;
   color: #333;
-}
-
-.toolbar-right {
-  display: flex;
-  gap: 8px;
 }
 
 .toolbar-btn {
@@ -1379,6 +1392,32 @@
   vertical-align: super;
 }
 
+.row-modified-btn {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px;
+  cursor: pointer;
+  opacity: 0.25;
+  filter: grayscale(1);
+  transition: opacity 0.15s, filter 0.15s;
+}
+
+.table-row .col-target:hover .row-modified-btn {
+  opacity: 0.7;
+}
+
+.row-modified-btn.modified {
+  opacity: 1;
+  filter: none;
+  background: #ffe599;
+  border-radius: 3px;
+}
+
 /* Popup Styles */
 .popup-overlay {
   position: fixed;
@@ -1600,7 +1639,159 @@
 .side-panel-summary {
   font-size: 14px;
   color: #666;
+  margin-bottom: 10px;
+}
+
+/* 检查结果按红/黄/蓝过滤 */
+.side-panel-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-bottom: 12px;
+}
+
+.side-panel-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #555;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.side-panel-filter-chip:hover:not(:disabled) {
+  background: #ececec;
+  border-color: #c5c5c5;
+}
+
+.side-panel-filter-chip.active {
+  background: #e8f0fe;
+  border-color: #2f6feb;
+  color: #2f6feb;
+  font-weight: 600;
+}
+
+.side-panel-filter-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.side-panel-filter-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot-red { background: #e53935; }
+.dot-yellow { background: #f9a825; }
+.dot-blue { background: #1e88e5; }
+
+.side-panel-filter-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+/* 选中时用对应颜色的浅底，便于一眼确认当前筛选 */
+.side-panel-filter-chip.chip-red.active {
+  background: #fdecea;
+  border-color: #e53935;
+  color: #c62828;
+}
+
+.side-panel-filter-chip.chip-yellow.active {
+  background: #fff8e1;
+  border-color: #f9a825;
+  color: #b26a00;
+}
+
+.side-panel-filter-chip.chip-blue.active {
+  background: #e8f2fd;
+  border-color: #1e88e5;
+  color: #1565c0;
+}
+
+.side-panel-empty {
+  font-size: 13px;
+  color: #999;
+  text-align: center;
+  padding: 24px 0;
+}
+
+/* 检查结果条目：重点前置 + 截断显示 */
+.side-panel-detail-expected {
+  flex: 1 1 100%;
+  color: #2e7d32;
+  font-weight: 500;
+  font-size: 12px;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.side-panel-detail-clip {
+  flex: 1 1 100%;
+  color: #555;
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+/* 面板收起按钮 */
+.side-panel-collapse-btn {
+  background: #546e7a;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.side-panel-collapse-btn:hover {
+  background: #37474f;
+}
+
+/* 收起后的贴边细条：不关闭、保留结果，点击展开 */
+.side-panel-collapsed-bar {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  background: #2e7d32;
+  color: #fff;
+  border: none;
+  border-radius: 6px 0 0 6px;
+  padding: 14px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.12);
+  z-index: 9999;
+}
+
+.side-panel-collapsed-bar:hover {
+  background: #1b5e20;
+}
+
+.side-panel-collapsed-count {
+  writing-mode: horizontal-tb;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+  padding: 1px 6px;
+  font-size: 11px;
 }
 
 .side-panel-list {
@@ -3548,6 +3739,28 @@
 
 .doc-io-btn:hover {
   background: #f0f0f0;
+}
+
+.doc-io-warn {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8a5a00;
+  background: #fff7e6;
+  border: 1px solid #ffe0a3;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+}
+
+.doc-io-btn-primary {
+  border-color: #2f6feb;
+  background: #eaf1ff;
+  color: #2f6feb;
+  font-weight: 600;
+}
+
+.doc-io-btn-primary:hover {
+  background: #dbe7ff;
 }
 
 .ai-sync-btn {
